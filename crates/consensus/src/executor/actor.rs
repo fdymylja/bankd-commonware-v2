@@ -1679,6 +1679,12 @@ async fn forward_finalized(
     )
     .await?;
 
+    // Only now is it safe to persist side state keyed to this block (bankd shieldd).
+    execution_node
+        .on_finalized(block.digest().0, block.height().get())
+        .await
+        .wrap_err("failed running finalization hooks for finalized block")?;
+
     if let Some(public_key) = public_key.as_ref()
         && consensus_context.is_some_and(|context| context.proposer.to_inner() == *public_key)
     {

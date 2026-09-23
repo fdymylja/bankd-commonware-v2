@@ -1,4 +1,11 @@
-use crate::{StorageActionReplayState, TempoBlockExecutionCtx, evm::TempoEvm};
+use crate::{
+    StorageActionReplayState, TempoBlockExecutionCtx,
+    evm::TempoEvm,
+    shield::{
+        SHIELD_HEIGHT_SLOT, SHIELD_ROOT_SLOT, ShieldDepositInput, ShieldHandle, ShieldSession,
+        ShieldTxOutcome,
+    },
+};
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_evm::{
     Database, Evm, RecoveredTx,
@@ -13,23 +20,27 @@ use alloy_evm::{
 };
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
-use alloy_sol_types::SolCall;
+use alloy_sol_types::{SolCall, SolEvent};
 use commonware_codec::ReadExt;
 use reth_chainspec::EthChainSpec as _;
 use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
-    context::result::{ExecutionResult, HaltReason, ResultAndState},
+    context::result::{
+        ExecutionResult, HaltReason, Output, ResultAndState, ResultGas, SuccessReason,
+    },
     state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
-    InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t13_zone_factory_state,
+    IShield, InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SHIELD_ADDRESS,
+    SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+    VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state, t13_zone_factory_state,
 };
-use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
+use tempo_primitives::{
+    SHIELDED_TX_GAS, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
+};
 use tempo_revm::{ExecutionContext, evm::TempoContext};
 use tracing::trace;
 
@@ -94,6 +105,8 @@ pub struct TempoTxResult {
     /// Used by the payload builder to score blocks by actual proposer revenue. The value is the
     /// post-feeAMM amount, regardless of route shape — absorbs any number of pool haircuts.
     validator_fee: U256,
+    /// Hash of the executed tx, identifies SHLD deposits it emitted.
+    tx_hash: B256,
 }
 
 impl TempoTxResult {
@@ -123,6 +136,7 @@ impl TempoTxResult {
             is_payment,
             block_gas_used,
             validator_fee,
+            tx_hash: *tx.tx_hash(),
         }
     }
 
@@ -172,6 +186,14 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     non_payment_gas_left: u64,
     /// Incentive-section gas from real transactions; simulations are exempt.
     incentive_gas_used: u64,
+
+    /// Embedded shieldd engine, `None` when the node runs without it (tests, tools).
+    shield_engine: Option<ShieldHandle>,
+    /// This block's shieldd session, held from pre-execution to `finish`.
+    shield: Option<Box<dyn ShieldSession>>,
+    /// First shieldd failure seen in `commit_transaction`, which can't return errors.
+    /// Surfaced by `finish` so the block fails instead of diverging.
+    shield_error: Option<String>,
 }
 
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
@@ -183,8 +205,12 @@ where
         evm: TempoEvm<DB, I>,
         ctx: TempoBlockExecutionCtx<'a>,
         chain_spec: &'a TempoChainSpec,
+        shield_engine: Option<ShieldHandle>,
     ) -> Self {
         Self {
+            shield_engine,
+            shield: None,
+            shield_error: None,
             incentive_gas_used: 0,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
@@ -198,6 +224,207 @@ where
             section: BlockSection::StartOfBlock,
             replay_state: StorageActionReplayState::default(),
         }
+    }
+
+    /// Opens this block's shieldd session on the root the parent left in the root slot.
+    fn begin_shield_block(&mut self) -> Result<(), BlockExecutionError> {
+        let Some(engine) = self.shield_engine.clone() else {
+            return Ok(());
+        };
+        let parent_root = self
+            .inner
+            .evm
+            .db_mut()
+            .storage(SHIELD_ADDRESS, SHIELD_ROOT_SLOT)
+            .map_err(BlockExecutionError::other)?;
+        let block = self.evm().block();
+        let (height, timestamp) = (
+            block.number.saturating_to(),
+            block.timestamp.saturating_to(),
+        );
+        let mut session = engine.session();
+        session
+            .begin_block(B256::from(parent_root), height, timestamp)
+            .map_err(shield_err)?;
+        self.shield = Some(session);
+        Ok(())
+    }
+
+    /// Ends the shieldd block and writes its root + height into the SHLD slots, so the one
+    /// reth state root covers shieldd state.
+    fn finish_shield_block(&mut self) -> Result<(), BlockExecutionError> {
+        if let Some(error) = self.shield_error.take() {
+            return Err(shield_err(error));
+        }
+        let Some(mut session) = self.shield.take() else {
+            return Ok(());
+        };
+        let root = session.finish().map_err(shield_err)?;
+        let height = self.evm().block().number;
+        self.write_storage(
+            SHIELD_ADDRESS,
+            &[
+                (SHIELD_ROOT_SLOT, U256::from_be_bytes(root.0)),
+                (SHIELD_HEIGHT_SLOT, height),
+            ],
+        )
+    }
+
+    /// Applies a 0x77 tx through shieldd. It never touches the EVM: withdrawals become
+    /// balance moves out of the SHLD escrow, and a rejected tx is a reverted receipt.
+    fn execute_shielded(
+        &mut self,
+        tx: &TempoTxEnvelope,
+        payload: &[u8],
+        execution_context: ExecutionContext,
+    ) -> Result<TempoTxResult, BlockExecutionError> {
+        let session = self
+            .shield
+            .as_mut()
+            .ok_or_else(|| BlockValidationError::msg("shielded tx but no shieldd engine"))?;
+        let outcome = session.deliver_tx(payload).map_err(shield_err)?;
+        let gas = ResultGas::default().with_total_gas_spent(SHIELDED_TX_GAS);
+        let (result, state) = match outcome {
+            ShieldTxOutcome::Accepted { payouts } => {
+                let state = self.payout_state(&payouts)?;
+                let result = ExecutionResult::Success {
+                    reason: SuccessReason::Stop,
+                    gas,
+                    logs: Vec::new(),
+                    output: Output::Call(Bytes::new()),
+                };
+                (result, state)
+            }
+            ShieldTxOutcome::Rejected(log) => (
+                ExecutionResult::Revert {
+                    gas,
+                    logs: Vec::new(),
+                    output: Bytes::from(log.into_bytes()),
+                },
+                EvmState::default(),
+            ),
+        };
+        let next_section = self.validate_tx(tx, SHIELDED_TX_GAS)?;
+        Ok(TempoTxResult::new_precomputed(
+            tx,
+            execution_context,
+            result,
+            state,
+            next_section,
+            false,
+            SHIELDED_TX_GAS,
+            U256::ZERO,
+        ))
+    }
+
+    /// State diff moving each payout out of the SHLD escrow.
+    fn payout_state(
+        &mut self,
+        payouts: &[(Address, U256)],
+    ) -> Result<EvmState, BlockExecutionError> {
+        let db = self.inner.evm.db_mut();
+        let mut state = EvmState::default();
+        for &(to, amount) in payouts {
+            for (address, credit) in [(SHIELD_ADDRESS, false), (to, true)] {
+                if !state.contains_key(&address) {
+                    let info = db
+                        .basic(address)
+                        .map_err(BlockExecutionError::other)?
+                        .unwrap_or_default();
+                    let mut account = Account::from(info);
+                    account.mark_touch();
+                    state.insert(address, account);
+                }
+                let account = state.get_mut(&address).expect("inserted above");
+                account.info.balance = if credit {
+                    account.info.balance.checked_add(amount)
+                } else {
+                    account.info.balance.checked_sub(amount)
+                }
+                .ok_or_else(|| BlockValidationError::msg("shield escrow balance out of range"))?;
+            }
+        }
+        Ok(state)
+    }
+
+    /// Forwards the SHLD deposits a committed tx emitted to shieldd, refunding any it refuses.
+    fn forward_shield_deposits(&mut self, tx_hash: B256) {
+        let Some(receipt) = self.inner.receipts().last() else {
+            return;
+        };
+        if self.shield.is_none() || !receipt.success {
+            return;
+        }
+        let tx_index = (self.inner.receipts().len() - 1) as u32;
+        let deposits: Vec<ShieldDepositInput> = receipt
+            .logs
+            .iter()
+            .filter(|log| log.address == SHIELD_ADDRESS)
+            .filter_map(|log| IShield::ShielddDeposit::decode_log_data(&log.data).ok())
+            .enumerate()
+            .map(|(msg_index, ev)| ShieldDepositInput {
+                sender: ev.sender,
+                recipient: ev.recipient,
+                amount: ev.amount,
+                tx_hash,
+                tx_index,
+                msg_index: msg_index as u32,
+            })
+            .collect();
+        let session = self.shield.as_mut().expect("checked above");
+        let mut refunds = Vec::new();
+        for deposit in deposits {
+            let (sender, amount) = (deposit.sender, deposit.amount);
+            match session.deposit(deposit) {
+                Ok(true) => {}
+                Ok(false) => refunds.push((sender, amount)),
+                Err(error) => {
+                    self.shield_error.get_or_insert(error);
+                    return;
+                }
+            }
+        }
+        if !refunds.is_empty() {
+            match self.payout_state(&refunds) {
+                Ok(state) => self.inner.evm.db_mut().commit(state),
+                Err(error) => {
+                    self.shield_error.get_or_insert(error.to_string());
+                }
+            }
+        }
+    }
+
+    /// Writes storage slots on a precompile account (`deploy_precompile_at_boundary` only
+    /// touches accounts without code). Gives it the `0xEF` marker if genesis didn't, since an
+    /// empty account would be wiped by EIP-161 along with the slots.
+    fn write_storage(
+        &mut self,
+        address: Address,
+        slots: &[(U256, U256)],
+    ) -> Result<(), BlockExecutionError> {
+        let db = self.inner.evm.db_mut();
+        let info = db
+            .basic(address)
+            .map_err(BlockExecutionError::other)?
+            .unwrap_or_default();
+        let mut account = Account::from(info);
+        if account.info.is_empty_code_hash() {
+            let code = Bytecode::new_legacy([0xef].into());
+            account.info.code_hash = code.hash_slow();
+            account.info.code = Some(code);
+        }
+        for &(slot, value) in slots {
+            let original_value = db
+                .storage(address, slot)
+                .map_err(BlockExecutionError::other)?;
+            account.storage.insert(
+                slot,
+                EvmStorageSlot::new_changed(original_value, value, TransactionId::ZERO),
+            );
+        }
+        account.mark_touch();
+        db.commit(EvmState::from_iter([(address, account)]));
+        Ok(())
     }
 
     /// Deploys `0xEF` marker bytecode and initializes storage at a precompile address.
@@ -531,6 +758,8 @@ where
             self.upgrade_zone_runtimes_at_boundary()?;
         }
 
+        self.begin_shield_block()?;
+
         Ok(())
     }
 
@@ -544,6 +773,9 @@ where
     ) -> Result<Self::Result, BlockExecutionError> {
         let (mut tx_env, recovered) = tx.into_parts();
         let execution_context = tx_env.execution_context;
+        if let Some(payload) = recovered.tx().shielded_payload() {
+            return self.execute_shielded(recovered.tx(), payload, execution_context);
+        }
         // Remove any prewarming-specific context that was added to the tx env.
         if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
             tempo_tx_env.expiring_nonce_idx = None;
@@ -577,6 +809,7 @@ where
             is_payment: self.is_payment(recovered.tx()),
             block_gas_used,
             validator_fee,
+            tx_hash: *recovered.tx().tx_hash(),
         })
     }
 
@@ -588,9 +821,11 @@ where
             is_payment,
             block_gas_used,
             validator_fee: _,
+            tx_hash,
         } = output;
 
         let gas_output = self.inner.commit_transaction(inner);
+        self.forward_shield_deposits(tx_hash);
 
         self.section = next_section;
 
@@ -629,6 +864,7 @@ where
         }
 
         self.apply_current_committee_system_call()?;
+        self.finish_shield_block()?;
 
         let amsterdam_eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
 
@@ -676,6 +912,9 @@ where
         self.section
     }
 }
+
+#[cfg(test)]
+mod shield_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1126,6 +1365,7 @@ mod tests {
             is_payment: false,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
+            tx_hash: B256::ZERO,
         };
 
         let gas_output = executor.commit_transaction(output);
@@ -1321,6 +1561,7 @@ mod tests {
             is_payment: false,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
+            tx_hash: B256::ZERO,
         };
 
         let gas_output = executor.commit_transaction(output);
@@ -1363,6 +1604,7 @@ mod tests {
             is_payment: false,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
+            tx_hash: B256::ZERO,
         };
         executor.commit_transaction(output1);
 
@@ -1389,6 +1631,7 @@ mod tests {
             is_payment: false,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
+            tx_hash: B256::ZERO,
         };
         executor.commit_transaction(output2);
 
@@ -1454,6 +1697,7 @@ mod tests {
             is_payment: false,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
+            tx_hash: B256::ZERO,
         };
         executor.commit_transaction(output);
 
@@ -1502,6 +1746,7 @@ mod tests {
             is_payment: false,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
+            tx_hash: B256::ZERO,
         };
         executor.commit_transaction(output);
 
@@ -1553,6 +1798,7 @@ mod tests {
             is_payment: false,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
+            tx_hash: B256::ZERO,
         };
         executor.commit_transaction(output);
 
@@ -2037,4 +2283,8 @@ mod tests {
             result.gas_used, cumulative, regular
         );
     }
+}
+
+fn shield_err(error: impl core::fmt::Display) -> BlockExecutionError {
+    BlockExecutionError::msg(format!("shieldd: {error}"))
 }

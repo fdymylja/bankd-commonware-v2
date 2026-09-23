@@ -1,61 +1,89 @@
 # Shieldd in bankd v2: progress (E4)
 
-Everything lives in `crates/bankd-shield`, plus a few root manifest lines and a small change inside the `shieldd/` submodule (listed below). No tempo source files are touched yet.
+shieldd runs inside the node. Every block drives it, its root lands in reth state, it commits to disk only on commonware finality, and EVM accounts can deposit BRL into the shielded pool through the SHLD precompile. 0x77 shielded txs are accepted by the pool, included by the builder and executed through shieldd. What's still missing is a real proven 0x77 tx end to end (see "Real 0x77 tx").
 
 ## TL;DR
 
-- **Works in-workspace.** shieldd's Rust crates link straight into the tempo workspace. No cgo, no C ABI, no sidecar.
-- **Finalize-only commit is in.** Candidate blocks get executed and hashed in memory; shieldd only writes a block to RocksDB once the host finalizes it. Competing candidates at one height and children of unfinalized parents both work.
-- The one hard dep conflict was RocksDB. I fixed it by vendoring cnidarium onto rocksdb 0.24.
-- Shielded tx fees are still paid in shieldd's base asset (`ushieldd`) at zero gas price, same as v1. They can't be paid in BRL without a shieldd fee change (see "Denom").
+- shieldd's Rust crates link straight into the tempo workspace. No cgo, no C ABI, no sidecar.
+- **Finalize-only commit.** Candidate blocks run in memory; shieldd writes a block only when consensus finalizes it (`forward_finalized` -> `on_finalized`). Competing candidates and children of unfinalized parents both work.
+- **One state root.** Every block writes the shieldd root + height into the SHLD precompile's storage (slots 0 and 1).
+- **Deposits.** `SHLD.deposit(string recipient)` is payable, escrows `msg.value` at the SHLD address and emits `ShielddDeposit`. The block executor forwards the event to shieldd after the tx commits and refunds it in the same block if shieldd refuses it.
+- **0x77.** New envelope variant with no ECDSA signer. The pool checks it with shieldd, it sorts after every EVM tx, and executing it moves withdrawals out of the SHLD escrow.
+- Live checks: `shield-smoke.sh`, `smoke.sh` and `bridge-e2e.sh` all pass on localnets (details in "Tests").
 
 ## How to run
 
 ```bash
-git submodule update --init shieldd
-git -C shieldd lfs pull
-cargo check -p bankd-shield
-cargo test -p bankd-shield
-cargo deny check licenses
+git submodule update --init shieldd && git -C shieldd lfs pull
+cargo build --bin tempo --bin tempo-xtask
+
+./scripts/bankd/localnet.sh up 9001 8545 9000 1
+./scripts/bankd/shield-smoke.sh 8545 9001 9000   # restarts the node midway
+./scripts/bankd/localnet.sh down 9001
 ```
 
-The shieldd crates are path deps into the in-repo submodule (`shieldd/crates/...`), so CI just needs the submodule. First cold build is ~8 min (ark + rocksdb).
+- shieldd state lives in `<datadir>/shieldd` (`state/` RocksDB, `commit-roots.bin`, `outputs/`).
+- `BANKD_SHIELD_DISABLE=1` runs a node without it. Don't mix nodes with it on and off on one chain, they'd compute different state roots.
+- `localnet.sh restart` is new: it stops the validators and starts them again, keeping the data.
 
-## What's in the crate
-
-`ShieldExecutor` (`src/executor.rs`) wraps shieldd's `HostExecution` (the same thing the Go cgo handle drives), reworked for a host that executes blocks before they're final:
+## How it fits together
 
 ```text
-begin_block(BlockId{hash, parent, height}, time) -> (deposit | deliver_tx)* -> end_block -> seal() -> root
-finalize(hash, height)   // writes that block + its unfinalized ancestors, drops dead forks
+payload build / newPayload
+  TempoBlockExecutor::apply_pre_execution_changes
+    parent_root = SHLD.slot0 (parent state) -> session.begin_block(parent_root, number, ts)
+  tx 0x77            -> session.deliver_tx(payload) -> payouts out of SHLD escrow / reverted receipt
+  tx emits ShielddDeposit (after commit) -> session.deposit(..) -> refund if refused
+  finish             -> session.finish() = end_block + seal -> write SHLD slot0 = root, slot1 = height
+consensus forward_finalized (after FCU)
+  on_finalized(hash, height) -> root = SHLD.slot0 at hash -> ShieldExecutor::finalize(root, height)
 ```
 
-- `seal` returns the shieldd app hash but writes **nothing**. The block's own change set sits in memory, keyed by block hash.
-- `begin_block` picks one of three modes:
-  - `Live`: new hash. Runs on the finalized state plus the change sets of its unfinalized ancestors (walked via `parent`). Unknown parent is an error.
-  - `Cached`: the hash was already sealed (payload build, then `newPayload` on the same block). Nothing runs. Deposits and txs get back the exact outputs recorded on the first run, withdrawals included, and a different input sequence is an error.
-  - `Replay`: height is already finalized (restart, reth re-executing). No-op, and `seal` returns the stored root. This is still the v1 crash loop fix.
-- `finalize` commits oldest first, checks every disk root equals the staged root (`RootMismatch` = nondeterminism, node must stop), appends to the root log, then prunes every candidate that doesn't build on the new tip. Finalizing a height that's already final is a no-op.
-- `check_tx(bytes) -> ShieldFee` validates against the finalized state.
-- **Commit root log** (`src/records.rs`): cnidarium forgets old snapshots after a restart, so every finalized `(height, root)` gets appended to a small fsynced file. If we crash between the shieldd commit and the append, `open` backfills it.
-- `system.rs`: where the root goes in reth state, and `BRL_DENOM = "abrl"`.
+- **Candidates are keyed by their shieldd root, not the block hash.** The payload builder doesn't know the block hash until after execution, and reth never re-executes its own built blocks. Each block reads its parent's root from the SHLD slot, so the chain of candidates links by root. The finalize hook reads the finalized block's root back from its post-state. Two blocks with identical shieldd inputs on the same parent get the same root and changes, so sharing an entry is safe.
+- **Sessions.** One `ShieldExecutor` per node (`crates/node/src/shield.rs`). The builder, the engine and RPC-driven block execution take turns through a session lock held from pre-execution to `finish`. Finalize waits for that lock too.
+- **Replay.** Heights at or below the finalized height don't run shieldd. They hand back the outputs recorded at finalize time (`outputs/<height>.json`: deposit accept/refuse, tx outcomes and withdrawals), so reth re-importing a block after a restart gets identical EVM effects and the same stored root.
+- **Nested runtimes.** Calls from inside another tokio runtime (the pool validates inside `Handle::block_on`) hop to a scoped thread before `block_on` on shieldd's runtime. Opening and finalizing run in `spawn_blocking`. On drop, shieldd's runtime shuts down in the background.
 
-Pending candidates are memory only. After a restart reth re-executes anything unfinalized, so that's fine.
+## 0x77 shielded tx
 
-Tests (`cargo test -p bankd-shield`, 6 pass):
+- `crates/primitives/src/transaction/shielded.rs`: `TxShielded { input }`, encoded as `0x77 || rlp([input])`. The hash is keccak of that, and `shielded_sender(hash)` gives a unique pseudo-sender per tx (nonce 0), so reth's pool needs no sub-pool.
+- There's no signature and no nonce. Gas is fixed at `SHIELDED_TX_GAS = 250_000` against the block limit. It has priority fee 0 and effective price 0, so it sorts after every EVM tx and can't starve them. `max_fee_per_gas` reports a huge cap so reth doesn't park it below the base fee, and RPC shows that number.
+- Pool: `TempoTransactionValidator::with_shielded_checker` routes 0x77 to `ShieldExecutor::check_tx` against finalized state. That skips nonce/balance/fee/compliance checks. Without a checker it's `TxTypeNotSupported`.
+- Execution never touches the EVM. Accepted: transfer withdrawals of `abrl` to a `0x` recipient become balance moves out of the SHLD escrow. Rejected: a reverted receipt with shieldd's log as output. Prewarm's action replay is bypassed for 0x77.
+- RPC: `eth_sendRawTransaction` accepts it (custom tx type registered). `from` shows the pseudo-sender.
 
-- `competing_candidates_only_finalized_persists`: two different blocks at height 1 give different roots, sealing writes nothing, finalizing B persists B and drops A. Then restart: same committed state, and block 2 builds on it.
-- `child_of_unfinalized_parent_matches_sequential_commit`: seal p, then its child c before p is final, plus a dead sibling. Finalizing c commits p then c with the staged roots and drops the sibling. A second node that finalizes each block right away gets identical roots.
-- `re_executing_a_sealed_block_is_cached`: same hash twice returns the same outputs and root, and a diverging input errors.
-- `replay_guard_after_finalize`: restart, then replaying a finalized block is a no-op with the stored root.
-- `recovers_record_lost_after_shieldd_commit`: chop the last root log entry, reopen, and it recovers.
-- `rejects_unknown_parent_and_bad_tx`.
+## SHLD precompile
 
-There's still no real proven shielded tx fixture (needs the gnark prover + keys), so tests use host deposits for real state changes.
+`0x0000000000000000000000000000000053484C44`, ABI `IShield` in `crates/contracts/src/precompiles/bankd.rs`:
+
+- `deposit(string recipient) payable returns (bool)`: rejects zero value, an empty recipient or a blocked sender (the frame hook also reverts value from frozen accounts). It emits `ShielddDeposit(address indexed sender, string recipient, uint256 amount, string denom="abrl")`. The value was already moved into the SHLD balance by the EVM call itself, and the precompile reads `msg.value` through `Shield::with_value`.
+- `getLastCommitment() view returns (bytes32 root, uint64 height)`: value on this call reverts with `NotPayable`.
+- SHLD isn't in core's `BANKD_PRECOMPILES` no-value list, so value to it is allowed. Genesis gives it the `0xef` marker, and the executor adds the marker too if it's missing (otherwise EIP-161 would wipe the empty account together with the slots).
+
+## Tests
+
+- `cargo test -p bankd-shield`: 8 pass (competing candidates, child of an unfinalized parent vs sequential commits, re-execution gives the same root, replay returns recorded outputs, refused deposit, root log recovery, nested tokio runtime, unknown parent / bad tx).
+- `cargo test -p tempo-evm --lib shield`: 4 pass, using a mock engine (root/height slots written every block with the parent root read from state, 0x77 payout / revert, deposits forwarded and refused ones refunded, 0x77 with no engine is invalid).
+- `cargo test -p tempo-precompiles --features test-utils bankd`: bankd + 4 new Shield tests (selector coverage, event, zero/empty/blocked rejects, `getLastCommitment` reads the slots).
+- 0x77 type: `tempo-primitives` roundtrip/hash/sender/Compact tests, and the pool shielded checker test (accepted / rejected / no checker).
+- Live, 1-validator localnet, `scripts/bankd/shield-smoke.sh`: the root slot changes every block and the height slot equals the block number, `getLastCommitment` agrees, a deposit escrows 1 BRL, a refused deposit is refunded, a frozen sender can't deposit, and after a node restart the finalized block's root is unchanged, blocks continue, the height slot is fresh and the escrow is intact.
+- Regression: `scripts/bankd/smoke.sh` all checks pass, `scripts/bankd/bridge-e2e.sh` PASS.
+- Pre-existing failure, not from this work: `tempo-evm` `evm::tests::test_tip20_full_evm_storage_actions` (TIP-20 fee test, "lack of funds" since native BRL gas).
+
+## Real 0x77 tx
+
+Not done. Here's exactly what's missing:
+
+1. The spend builder, `shieldd/crates/bin/bankd-e2e-spend-builder`, hardcodes the `ubrl` denom (main.rs 354, 417). It needs a denom arg (`abrl`), which is a shieldd change.
+2. Building it with `bundled-proving-keys` means a standalone shieldd workspace build (its own 1.89 toolchain) plus the gnark Go prover runtime. The proving keys are there (`tools/gnark/artifacts`, 961M), but that's a second full build and disk was at 21G free.
+3. It reads a shieldd RocksDB to find the test wallet's note. That means copying `<datadir>/shieldd/state` out of a stopped node (RocksDB is locked while it runs), after a deposit to `shieldd1u29dhz...` (test wallet 0) has finalized.
+4. Then wrap the output: `cast publish 0x77$(cast to-rlp '["0x<tx bytes>"]' | cut -c3-)`.
+
+Until then the 0x77 path is covered by unit tests with a mock engine, plus shieldd rejecting junk bytes in pool and execution.
 
 ## shieldd submodule change
 
-Branch `reece/shield-finalize-commit` off `origin/dev` (`76f370e97a`). No upstream set, never pushed. Everything is in `crates/core/app/src/app/`, about 200 lines, and it only adds API. The existing `commit` path is untouched, so v1 bankd keeps working.
+Branch `reece/shield-finalize-commit` off `origin/dev` (`76f370e97a`), now mizufinance/shieldd PR #156. The superproject gitlink is staged at `2349ae0708`. Everything is in `crates/core/app/src/app/`, about 200 lines, and it only adds API. The existing `commit` path is untouched, so v1 bankd keeps working.
 
 - `staged.rs` (new): `BlockChanges`, one block's verifiable + nonverifiable writes (ephemeral objects and events dropped, same as a normal commit). It has `merge`, `without(base)` (a block's own delta) and `apply_to(state)`. It only uses stock cnidarium 0.83 API, so shieldd still builds standalone.
 - `lifecycle.rs`: `App::take_block_changes`, the same pre-commit work as `App::commit` (nullifier block check, flush deferred tx index), but it flattens and hands the changes back instead of writing them.
@@ -71,7 +99,7 @@ It's **`abrl`** (atto-BRL, 18 decimals, matches native wei amounts 1:1).
 - Nothing in shieldd hardcodes `wei` or `abrl`. `abrl` doesn't match any registry regex, so `parse_denom` treats it as a plain base denom, and the first deposit registers it (same as `ubrl` in v1).
 - The only hardcoded BRL denom in shieldd is `ubrl`, in `crates/bin/bankd-e2e-spend-builder` and `crates/disclosure/tests/claims.rs`. Those are v1 6-decimal fixtures. They'd need updating for v2 no matter what we pick (`wei` breaks them the same way). The disclosure test builds its own notes, so it isn't affected at runtime.
 - The `ShielddDeposit` event carries the denom as a plain string. The v1 Shinzo collection (`infra/supervisor-reporting/shinzo-collections.yaml`) just stores it and doesn't match on it.
-- **Can't do** "pay shielded fees in abrl": shieldd's fee component only accepts `BASE_ASSET_ID` (`ushieldd`). See `fee_pay.rs` ("only base-asset fees are supported") and `FeeParameters::validate_base_asset_only`. v1 runs with `fixed_gas_prices: {}`, meaning zero fees in `ushieldd`, and v2 inherits that. So `check_tx`'s `ShieldFee.asset_id` is `ushieldd`. Genesis pre-registration of `abrl` isn't needed for deposits. BRL fees would need a shieldd fee component change, which is a separate decision.
+- **Can't do** "pay shielded fees in abrl": shieldd's fee component only accepts `BASE_ASSET_ID` (`ushieldd`). See `fee_pay.rs` ("only base-asset fees are supported") and `FeeParameters::validate_base_asset_only`. v1 runs with `fixed_gas_prices: {}`, meaning zero fees in `ushieldd`, and v2 inherits that. So `check_tx`'s `ShieldFee.asset_id` is `ushieldd`, and I didn't pre-register `abrl` at genesis because deposits don't need it. BRL fees would need a shieldd fee component change, which is a separate decision.
 
 ## Dependency conflicts
 
@@ -101,66 +129,25 @@ Note: the forked cnidarium with the shared RocksDB block cache (`SHIELDD_ROCKSDB
 
 No GPL/AGPL/LGPL anywhere.
 
-## Manifest lines I had to touch outside the crate
+## Where the code lives (for per-feature commits)
 
-- root `Cargo.toml`: `crates/bankd-shield` in `members`, the vendored cnidarium and `shieldd` in `exclude`, and the `[patch.crates-io]` block at the bottom
-- `.gitmodules` + the `shieldd` gitlink (staged, not committed)
-- `deny.toml`: three `[[licenses.clarify]]` entries
-- `Cargo.lock`
+- **Finalize-only shieldd executor:** `crates/bankd-shield/**`, `shieldd` gitlink.
+- **0x77 tx type:** `crates/primitives/src/transaction/{shielded,envelope,mod}.rs`, `crates/primitives/src/{lib.rs,reth_compat/transaction/envelope.rs}`, `crates/alloy/src/{network.rs,rpc/request.rs,rpc/reth_compat.rs}`, `crates/revm/src/tx.rs`, `crates/transaction-pool/src/{validator,transaction}.rs`.
+- **Block execution + root slots:** `crates/evm/src/{shield.rs,block.rs,block/shield_tests.rs,lib.rs,test_utils.rs,action_replay.rs,engine.rs}`.
+- **Node wiring + finalize hook:** `crates/node/src/{shield.rs,node.rs,lib.rs}`, `crates/node/Cargo.toml`, `crates/consensus/src/executor/{mod.rs,actor.rs}`, root `Cargo.toml` (`bankd-shield` workspace dep), `Cargo.lock`.
+- **SHLD precompile:** already committed by the user in `0f75fc1746`, plus a one-line unused-import fix in `crates/precompiles/src/bankd/shield.rs`.
+- **Scripts/docs:** `scripts/bankd/shield-smoke.sh` (new), `scripts/bankd/localnet.sh` (`restart`, logs append), this file.
 
-## Hooks needed from core
+## Gaps / flagged
 
-These are the exact spots. Nothing is wired yet on purpose, since most of them are in files other people are editing.
-
-### (a) tx type 0x77
-
-- `crates/primitives/src/transaction/envelope.rs`: add `#[envelope(ty = 0x77, typed = ShieldedTransaction)] Shielded(ShieldedTx)` to `TempoTxEnvelope`. The payload is just the raw shieldd tx bytes. It has no ECDSA signer, but the envelope derive wants `SignerRecoverable`, so `recover_signer` returns the fixed `bankd_shield::system::SHIELD_ADDRESS`. Also the `TempoTxType` <-> `TxType` conversions (~68 to 95) and the reth compat envelope (`reth_compat/transaction/envelope.rs` ~143 to 160).
-- Hash = keccak of the typed encoding like every other type (shieldd's own tx id is separate, it goes in the receipt logs).
-- **Pool** (`crates/transaction-pool/src/validator.rs`, `validate_one_with_evm` ~395): route 0x77 to `ShieldExecutor::check_tx` and skip the whole nonce/balance/fee path. Every shielded tx "comes from" `SHIELD_ADDRESS`, so they can't go in reth's per-sender nonce queues. I'd give them their own small sub-pool keyed by shieldd tx id with a nullifier conflict set (like `tt_2d_pool.rs` sits next to the main pool), and have the payload builder (`crates/payload/builder/src/lib.rs` ~245) pull from it. Revalidate on every new head since nullifiers get spent.
-- **RPC** (`crates/alloy/src/rpc/`, `reth_compat.rs`): `eth_sendRawTransaction` works once the envelope decodes it. `eth_getTransaction*` / receipts need the new variant mapped. `from` shows `SHIELD_ADDRESS`.
-- `crates/revm/src/tx.rs` (`FromRecoveredTx<TempoTxEnvelope>` ~392): shielded txs never reach the EVM (see b), but the match needs an arm. Map to a zero gas system style env.
-
-### (b) execution
-
-- Put `Arc<Mutex<ShieldExecutor>>` in `TempoEvmConfig` (`crates/evm/src/lib.rs` ~63), opened by the node at `<datadir>/shieldd`, and run `init_genesis` from the chainspec.
-- `TempoBlockExecutor::apply_pre_execution_changes` (`crates/evm/src/block.rs` ~485): `begin_block(BlockId { hash, parent, height }, timestamp)`. **Needs the block hash inside the executor.** The executor context has the parent hash, but not the hash of the block being built (the payload builder only knows it after sealing). Options: key candidates by `(parent_hash, tx list hash)` instead, or re-key after assembly. Not settled yet, see gaps.
-- `execute_transaction_without_commit` (~541): for 0x77, don't call the inner EVM. Call `deliver_tx`, build a receipt (status = accepted), and turn `TxOutcome::Accepted { withdrawals }` into BRL balance moves from `SHIELD_ADDRESS` to each recipient. Charge a fixed gas amount against the block limit so blocks can't be stuffed.
-- Deposits: the SHLD precompile does **not** call shieldd itself, because shieldd can't roll back when the EVM frame reverts. It escrows BRL into `SHIELD_ADDRESS` and emits `ShielddDeposit`. In `commit_transaction` (~583), for each `ShielddDeposit` log from `SHIELD_ADDRESS` in a successful receipt, call `ShieldExecutor::deposit`. Logs are reverted with the frame, so this is revert safe for free.
-- `finish` (~622, next to `apply_current_committee_system_call`): `end_block()` then `seal()`, then (c).
-- **Finalization hook:** call `finalize(hash, height)` when commonware finalizes a block. The natural spot is wherever the consensus executor forwards finalized blocks to the engine as forkchoice (`crates/consensus/src/executor/`), or a reth `CanonStateNotification` listener if that's only fired for finalized blocks. Blocks must be finalized in order. `finalize` walks ancestors, so skipping heights is fine.
-- Invariant worth asserting in tests: `balance(SHIELD_ADDRESS)` == shielded BRL supply.
-
-### (c) app hash in reth state
-
-`bankd_shield::system`: `SHIELD_ADDRESS` = SHLD precompile `0x...53484C44`, slot 0 = shieldd root, slot 1 = shieldd height. `root_slot_writes(height, root)` returns the pairs. Write them in `finish` the same way `deploy_precompile_at_boundary` (`block.rs` ~207) writes storage: build an `Account` with changed `EvmStorageSlot`s and `db.commit`. Then the one reth state root covers shieldd, and the light client can prove a shieldd root with a normal `eth_getProof` on slot 0.
-
-### (d) SHLD deposit precompile
-
-Owned by modules (`crates/precompiles/src/bankd/`, registered in `extend_tempo_precompiles`, `crates/precompiles/src/lib.rs` ~217). What I need from it:
-
-- `deposit(string recipient) payable`: move `msg.value` into the `SHIELD_ADDRESS` balance, emit `ShielddDeposit(address indexed sender, string recipient, uint256 amount, string denom)` (same event as v1's `IShieldd.sol`, v1 took a coin string, v2 is just native BRL so `msg.value`).
-- `getLastCommitment()` view: read slot 0.
-- Compliance: check the sender isn't frozen before escrowing.
-
-## Remaining 0x77 wiring (core)
-
-In order:
-
-1. Envelope variant + `SignerRecoverable` sentinel + tx env arm (a).
-2. Shielded sub-pool + `check_tx` in the validator, and the payload builder pulling from it (a).
-3. `ShieldExecutor` in `TempoEvmConfig`, then begin/deliver/end/seal in the block executor (b).
-4. Root + height slot writes in `finish` (c).
-5. Finalization hook into `finalize` (b).
-6. SHLD precompile escrow + `ShielddDeposit` log, forwarded by the executor (d).
-7. RPC mapping for 0x77 txs and receipts (a).
-
-## Blockers / gaps (flagging these, not sure about all of them)
-
-1. **Block hash at execution time.** `ShieldExecutor` keys candidates by block hash, but the block executor may not know its own hash before assembly (see (b)). That needs a decision from core.
-2. Pool `check_tx` validates against finalized state only. A tx that spends a note created in a notarized but unfinalized block gets rejected until that block finalizes. That's safe but a bit laggy.
-3. `ShieldExecutor` calls `block_on` on its own runtime, so it panics on a tokio worker. Block execution is on plain threads, but pool validation is async, so wrap it in `spawn_blocking`.
-4. BRL fees in the shielded pool need a shieldd fee component change (see "Denom").
-5. After a restart the finalized tip hash is unknown, so the first candidate after restart is only checked by height, not by parent hash. It could be recorded in the root log if we want that check.
-6. Toolchain: shieldd pins 1.89, we build it on 1.97.1. It compiles, but no real proof has been verified on this toolchain yet (no fixture). Building shieldd standalone with 1.97.1 fails on `metrics 0.24.1`. Its own 1.89 pin is fine, and inside our workspace it's fine.
-7. The shared RocksDB block cache fix isn't on shieldd `dev`, so it still needs porting into `vendor/cnidarium`.
-8. I didn't run shieldd's own test suite on the submodule change (CPU budget, and it needs a separate 1.89 build). The bankd-shield tests cover the new API end to end.
+1. RPC-driven block execution (pending block, `eth_simulateV1`, tracing) goes through the same executor, so it runs shieldd too. Historical heights replay cheaply. Tip+1 simulations stage throwaway candidates, which get pruned at the next finalize, and hold the session lock while they run. A config switch that keeps shieldd off in RPC paths would be cleaner.
+2. The BAL parallel executors (feature `bal`, off by default) would each open a session. Not supported.
+3. Withdrawals: only `Transfer` to a `0x` address in `abrl` is paid out. `Execution` withdrawals and non-EVM recipients stay in escrow (deterministic, logged). Not handled yet.
+4. The pool checks 0x77 against finalized state only, so a spend of a note created in a notarized but unfinalized block waits for finality. The same tx included twice by a malicious proposer just gets rejected by shieldd (nullifier), since the pseudo-sender nonce isn't bumped.
+5. The refund of a refused deposit happens after the receipt, which still shows the `ShielddDeposit` log. Indexers should treat `ShielddDeposit` as a request, not a confirmed deposit.
+6. `outputs/<height>.json` and `commit-roots.bin` grow forever. No pruning yet.
+7. Mixing nodes with `BANKD_SHIELD_DISABLE` on and off forks the chain (the slot writes differ). It's a dev-only switch.
+8. Shielded fees stay in `ushieldd` at zero price (see "Denom").
+9. `forward_finalized` fails if shieldd's finalize fails (e.g. `RootMismatch`), which stalls finalization forwarding on purpose instead of diverging.
+10. The shared RocksDB block cache fix still isn't in `vendor/cnidarium`.
+11. Disk: the main `target/` is ~85G. I ran `cargo clean` on my old worktree (14.5G). The sibling worktrees' targets are untouched.

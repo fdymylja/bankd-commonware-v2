@@ -1,7 +1,12 @@
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use alloy_primitives::{B256, keccak256};
 use cnidarium::Storage;
+use serde::{Deserialize, Serialize};
 use shieldd_sdk_app::{
     SUBSTORE_PREFIXES,
     app::{BlockChanges, HostBlock, HostExecution, HostWithdrawal},
@@ -10,10 +15,37 @@ use shieldd_sdk_app::{
 };
 use shieldd_sdk_proto::execution_client::v1::{DepositRequest, HostSource};
 use shieldd_sdk_sct::component::clock::EpochRead as _;
+use shieldd_sdk_shielded_pool::HostWithdrawalDestination;
 use shieldd_sdk_transaction::Transaction;
 use tokio::runtime::{Builder, Runtime};
 
 use crate::records::CommitRecords;
+
+/// `block_on` on the executor's runtime, borrowing only the `runtime` field so the future
+/// can borrow other fields mutably.
+macro_rules! run {
+    ($s:ident, $fut:expr) => {
+        block_on($s.runtime.as_ref().expect("runtime lives until drop"), $fut)
+    };
+}
+
+/// Runs `fut` to completion on `runtime`. Callers inside another tokio runtime (the txpool
+/// validates inside `Handle::block_on`) can't nest a `block_on`, so hop to a scoped thread.
+fn block_on<F>(runtime: &Runtime, fut: F) -> F::Output
+where
+    F: std::future::Future + Send,
+    F::Output: Send,
+{
+    if tokio::runtime::Handle::try_current().is_err() {
+        return runtime.block_on(fut);
+    }
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| runtime.block_on(fut))
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    })
+}
 
 /// Errors from [`ShieldExecutor`].
 #[derive(Debug, thiserror::Error)]
@@ -21,16 +53,16 @@ pub enum ShieldError {
     /// Shieldd state has no genesis yet.
     #[error("shieldd state is not initialized")]
     NotInitialized,
-    /// The parent of a candidate is neither finalized nor a known candidate.
-    #[error("unknown parent {parent} for shieldd block at height {height}")]
+    /// The parent root is neither the finalized root nor a sealed candidate.
+    #[error("unknown parent shieldd root {parent} for block at height {height}")]
     UnknownParent {
         /// Height of the block being opened.
         height: u64,
-        /// Its parent hash.
+        /// Shieldd root the parent block left in reth state.
         parent: B256,
     },
-    /// `finalize` named a block that was never sealed.
-    #[error("unknown shieldd candidate {0}")]
+    /// `finalize` named a root that was never sealed.
+    #[error("unknown shieldd candidate root {0}")]
     UnknownBlock(B256),
     /// Committing a finalized block gave a different root than staging it.
     /// Means shieldd execution is not deterministic, the node must stop.
@@ -43,9 +75,9 @@ pub enum ShieldError {
         /// Root the disk commit produced.
         committed: B256,
     },
-    /// A re-executed candidate got different inputs than the first run.
-    #[error("re-execution of shieldd block {0} diverged from its first run")]
-    CachedDiverged(B256),
+    /// Replaying a finalized block with different inputs than the original run.
+    #[error("replay of shieldd height {0} diverged from the recorded run")]
+    ReplayDiverged(u64),
     /// A lifecycle call arrived with no open block.
     #[error("no shieldd block is open")]
     NoOpenBlock,
@@ -67,7 +99,7 @@ pub struct ShieldFee {
 }
 
 /// Result of delivering one shielded tx.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum TxOutcome {
     /// Applied. Withdrawals are host side effects core must perform (credit BRL).
     Accepted {
@@ -79,11 +111,29 @@ pub enum TxOutcome {
         /// Shieldd error text.
         log: String,
     },
-    /// Block is already finalized (replay), nothing ran.
-    Replayed,
 }
 
-/// Host-side deposit, what the SHLD precompile hands over after debiting BRL.
+impl TxOutcome {
+    /// `(recipient, amount)` for every plain transfer withdrawal of `denom`. Execution
+    /// withdrawals and other denoms are left out (the host has no handler for them yet).
+    pub fn transfers(&self, denom: &str) -> Vec<(String, u128)> {
+        let TxOutcome::Accepted { withdrawals } = self else {
+            return Vec::new();
+        };
+        withdrawals
+            .iter()
+            .filter(|w| w.denom == denom)
+            .filter_map(|w| match &w.destination {
+                HostWithdrawalDestination::Transfer(t) => {
+                    Some((t.recipient.clone(), w.amount.value()))
+                }
+                HostWithdrawalDestination::Execution(_) => None,
+            })
+            .collect()
+    }
+}
+
+/// Host-side deposit, what the SHLD precompile hands over after escrowing BRL.
 #[derive(Clone, Debug)]
 pub struct ShieldDeposit {
     /// Shieldd denom string of the asset, [`crate::system::BRL_DENOM`] for BRL.
@@ -109,79 +159,83 @@ impl ShieldDeposit {
     }
 }
 
-/// Identity of a host (reth) block.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BlockId {
-    /// Block hash.
-    pub hash: B256,
-    /// Parent block hash.
-    pub parent: B256,
-    /// Block number.
-    pub height: u64,
-}
-
 /// How the open block runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockMode {
-    /// Fresh candidate, executes against shieldd.
+    /// Candidate, executes against shieldd.
     Live(u64),
-    /// Same block hash was already sealed, recorded results are handed back.
-    Cached(u64),
-    /// Height is already finalized, everything is a no-op.
+    /// Height is already finalized: nothing runs and the recorded outputs of the
+    /// original run are handed back, so reth re-executes to the same state.
     Replay(u64),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 enum Output {
+    // `None` means shieldd refused the deposit and the host refunds it.
     Deposit(Option<B256>),
     Tx(TxOutcome),
 }
+
+type Outputs = Vec<(B256, Output)>;
 
 #[derive(Debug)]
 struct Pending {
     height: u64,
     parent: B256,
     changes: Arc<BlockChanges>,
-    root: B256,
-    // (input digest, output) per call, so re-executing the same block (payload
-    // build then validation) returns identical results without running shieldd.
-    outputs: Vec<(B256, Output)>,
+    outputs: Outputs,
 }
 
 #[derive(Debug)]
 struct Open {
-    id: BlockId,
     mode: BlockMode,
-    outputs: Vec<(B256, Output)>,
+    parent: B256,
+    outputs: Outputs,
+    // Recorded outputs of a finalized height, consumed in order on replay.
+    replay: Outputs,
 }
 
 /// Embedded shieldd state machine for a host that executes candidate blocks
 /// before they're final.
 ///
+/// Candidates are keyed by the shieldd root they seal to, and link to their
+/// parent by the root the parent left in reth state (the SHLD root slot). So
+/// the host never needs the block hash, which the payload builder doesn't have
+/// until after execution. Identical shieldd inputs on the same parent give the
+/// same root and the same changes, so sharing one entry is safe.
+///
 /// Lifecycle per candidate: `begin_block -> (deposit | deliver_tx)* -> end_block
 /// -> seal`. `seal` returns the app hash but writes nothing. Only `finalize`
-/// writes to disk, so competing candidates at one height are free to run.
+/// writes to disk.
 ///
 /// Calls block on an owned tokio runtime, so they must not run on a tokio worker
 /// thread (use `spawn_blocking` / `block_in_place`). Same model as the cgo handle.
 pub struct ShieldExecutor {
-    // Field order matters: execution and storage drop before the runtime.
     execution: HostExecution,
-    storage: Storage,
     records: CommitRecords,
+    outputs_dir: PathBuf,
     last_committed: Option<u64>,
-    // Hash of the last finalized block, unknown right after a restart.
-    tip_hash: Option<B256>,
+    tip_root: B256,
     pending: HashMap<B256, Pending>,
     open: Option<Open>,
-    runtime: Runtime,
+    // Always `Some` until drop. Shut down in the background on drop, since a plain drop
+    // panics when the node drops us from inside its async runtime.
+    runtime: Option<Runtime>,
+}
+
+impl Drop for ShieldExecutor {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
 }
 
 impl std::fmt::Debug for ShieldExecutor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ShieldExecutor")
             .field("last_committed", &self.last_committed)
-            .field("tip_hash", &self.tip_hash)
+            .field("tip_root", &self.tip_root)
             .field("pending", &self.pending.len())
             .field("open", &self.open.as_ref().map(|o| o.mode))
             .finish_non_exhaustive()
@@ -190,10 +244,12 @@ impl std::fmt::Debug for ShieldExecutor {
 
 impl ShieldExecutor {
     /// Opens (or creates) shieldd state under `home`: RocksDB in `home/state`,
-    /// the commit root log in `home/commit-roots.bin`.
+    /// the commit root log in `home/commit-roots.bin` and per-height outputs in
+    /// `home/outputs/`.
     pub fn open(home: impl AsRef<Path>) -> Result<Self, ShieldError> {
         let home = home.as_ref();
-        std::fs::create_dir_all(home).map_err(anyhow::Error::from)?;
+        let outputs_dir = home.join("outputs");
+        std::fs::create_dir_all(&outputs_dir).map_err(anyhow::Error::from)?;
         let mut records = CommitRecords::open(&home.join("commit-roots.bin"))
             .map_err(|e| anyhow::anyhow!("open commit records: {e}"))?;
         let db = home.join("state");
@@ -202,7 +258,7 @@ impl ShieldExecutor {
             .thread_name("shieldd")
             .build()
             .map_err(|e| anyhow::anyhow!("build shieldd runtime: {e}"))?;
-        let (storage, last_committed) = runtime.block_on(async {
+        let (storage, last_committed) = block_on(&runtime, async {
             let storage = Storage::load(db.clone(), SUBSTORE_PREFIXES.to_vec())
                 .await
                 .map_err(|e| anyhow::anyhow!("open shieldd db {}: {e:#}", db.display()))?;
@@ -214,11 +270,12 @@ impl ShieldExecutor {
             };
             Ok::<_, anyhow::Error>((storage, last))
         })?;
+        let mut tip_root = B256::ZERO;
         if let Some(h) = last_committed {
+            tip_root = latest_root(&runtime, &storage)?;
             // Only the newest record can be missing (crash after shieldd commit).
             if records.len() == h {
-                let root = latest_root(&runtime, &storage)?;
-                records.append(h, root).map_err(anyhow::Error::from)?;
+                records.append(h, tip_root).map_err(anyhow::Error::from)?;
             }
             if records.len() != h + 1 {
                 return Err(anyhow::anyhow!(
@@ -228,25 +285,22 @@ impl ShieldExecutor {
                 .into());
             }
         }
-        let execution = HostExecution::new(storage.clone());
+        let execution = HostExecution::new(storage);
         Ok(Self {
             execution,
-            storage,
             records,
+            outputs_dir,
             last_committed,
-            tip_hash: None,
+            tip_root,
             pending: HashMap::new(),
             open: None,
-            runtime,
+            runtime: Some(runtime),
         })
     }
 
     /// Last finalized shieldd height and root, `None` before genesis.
-    pub fn committed(&self) -> Result<Option<(u64, B256)>, ShieldError> {
-        let Some(height) = self.last_committed else {
-            return Ok(None);
-        };
-        Ok(Some((height, latest_root(&self.runtime, &self.storage)?)))
+    pub fn committed(&self) -> Option<(u64, B256)> {
+        self.last_committed.map(|h| (h, self.tip_root))
     }
 
     /// Number of sealed, unfinalized candidates held in memory.
@@ -260,12 +314,12 @@ impl ShieldExecutor {
         if self.last_committed.is_some() {
             return self.root_at(0);
         }
-        let root = self.runtime.block_on(async {
+        let root = run!(self, async {
             self.execution.init_genesis(genesis).await?;
             self.execution.commit().await
         })?;
         let root = to_b256(&root.root_hash)?;
-        self.record(0, root)?;
+        self.record(0, root, &Vec::new())?;
         Ok(root)
     }
 
@@ -275,7 +329,7 @@ impl ShieldExecutor {
         if self.last_committed.is_none() {
             return Err(ShieldError::NotInitialized);
         }
-        let response = self.runtime.block_on(self.execution.check_tx(tx))?;
+        let response = run!(self, self.execution.check_tx(tx))?;
         if response.code != 0 {
             return Err(ShieldError::Rejected(response.log));
         }
@@ -290,48 +344,55 @@ impl ShieldExecutor {
         })
     }
 
-    /// Opens a candidate block. Any block left open is abandoned.
+    /// Opens block `height` on top of `parent_root`, the shieldd root the parent
+    /// block wrote into reth state (zero for the first block). Any block left
+    /// open is abandoned.
     ///
-    /// A finalized height becomes a replay (the v1 crash loop fix). A hash that
-    /// was already sealed becomes cached. Otherwise the block runs on the
-    /// finalized state plus its unfinalized ancestors.
-    pub fn begin_block(&mut self, id: BlockId, unix_secs: i64) -> Result<BlockMode, ShieldError> {
+    /// A finalized height becomes a replay (the v1 crash loop fix). Otherwise
+    /// the block runs on the finalized state plus its unfinalized ancestors.
+    pub fn begin_block(
+        &mut self,
+        parent_root: B256,
+        height: u64,
+        unix_secs: i64,
+    ) -> Result<BlockMode, ShieldError> {
         if self.open.take().is_some() {
             self.execution.rollback();
         }
         let committed = self.last_committed.ok_or(ShieldError::NotInitialized)?;
-        let mode = if id.height <= committed {
-            BlockMode::Replay(id.height)
-        } else if self.pending.contains_key(&id.hash) {
-            BlockMode::Cached(id.height)
+        let (mode, replay) = if height <= committed {
+            (BlockMode::Replay(height), self.load_outputs(height)?)
         } else {
-            let ancestors = self.ancestors(&id, committed)?;
+            let ancestors = self.ancestors(parent_root, height, committed)?;
             let time = tendermint::Time::from_unix_timestamp(unix_secs, 0)
                 .map_err(|e| anyhow::anyhow!("block time {unix_secs}: {e}"))?;
             let block = HostBlock {
-                height: i64::try_from(id.height).map_err(anyhow::Error::from)?,
+                height: i64::try_from(height).map_err(anyhow::Error::from)?,
                 time,
             };
-            self.runtime
-                .block_on(self.execution.begin_block_on_pending(block, &ancestors))?;
-            BlockMode::Live(id.height)
+            run!(
+                self,
+                self.execution.begin_block_on_pending(block, &ancestors)
+            )?;
+            (BlockMode::Live(height), Vec::new())
         };
         self.open = Some(Open {
-            id,
             mode,
+            parent: parent_root,
             outputs: Vec::new(),
+            replay,
         });
         Ok(mode)
     }
 
     /// Mints a shielded note for BRL the SHLD precompile already escrowed.
-    /// Returns the deterministic deposit id, `None` on replay.
+    /// Returns the deposit id, or `None` when shieldd refused it (bad recipient,
+    /// unregistered regulated asset, ...) and the host must refund the escrow.
     pub fn deposit(&mut self, deposit: ShieldDeposit) -> Result<Option<B256>, ShieldError> {
         let digest = deposit.digest();
         let open = self.open.as_ref().ok_or(ShieldError::NoOpenBlock)?;
         let out = match open.mode {
-            BlockMode::Replay(_) => return Ok(None),
-            BlockMode::Cached(_) => self.cached_output(digest)?,
+            BlockMode::Replay(h) => self.replayed(digest, h)?,
             BlockMode::Live(height) => {
                 let request = DepositRequest {
                     denom: deposit.denom,
@@ -344,13 +405,19 @@ impl ShieldExecutor {
                         tx_index: deposit.tx_index,
                     }),
                 };
-                let result = self.runtime.block_on(self.execution.deposit(request))?;
-                Output::Deposit(Some(to_b256(&result.response.deposit_id)?))
+                // A failed deposit leaves shieldd state untouched (its delta is
+                // only applied on success), so it's safe to keep going.
+                match run!(self, self.execution.deposit(request)) {
+                    Ok(result) => Output::Deposit(Some(to_b256(&result.response.deposit_id)?)),
+                    Err(error) => {
+                        tracing::warn!(%error, "shieldd refused deposit, refunding");
+                        Output::Deposit(None)
+                    }
+                }
             }
         };
-        let id = match &out {
-            Output::Deposit(id) => *id,
-            Output::Tx(_) => return Err(self.diverged()),
+        let Output::Deposit(id) = out else {
+            return Err(self.diverged());
         };
         self.push_output(digest, out);
         Ok(id)
@@ -361,10 +428,9 @@ impl ShieldExecutor {
         let digest = keccak256(tx);
         let open = self.open.as_ref().ok_or(ShieldError::NoOpenBlock)?;
         let out = match open.mode {
-            BlockMode::Replay(_) => return Ok(TxOutcome::Replayed),
-            BlockMode::Cached(_) => self.cached_output(digest)?,
+            BlockMode::Replay(h) => self.replayed(digest, h)?,
             BlockMode::Live(_) => {
-                let response = self.runtime.block_on(self.execution.deliver_tx(tx))?;
+                let response = run!(self, self.execution.deliver_tx(tx))?;
                 Output::Tx(if response.code == 0 {
                     TxOutcome::Accepted {
                         withdrawals: response.withdrawals,
@@ -374,10 +440,10 @@ impl ShieldExecutor {
                 })
             }
         };
-        let outcome = match &out {
-            Output::Tx(outcome) => outcome.clone(),
-            Output::Deposit(_) => return Err(self.diverged()),
+        let Output::Tx(outcome) = &out else {
+            return Err(self.diverged());
         };
+        let outcome = outcome.clone();
         self.push_output(digest, out);
         Ok(outcome)
     }
@@ -387,7 +453,7 @@ impl ShieldExecutor {
         let open = self.open.as_ref().ok_or(ShieldError::NoOpenBlock)?;
         if let BlockMode::Live(h) = open.mode {
             let height = i64::try_from(h).map_err(anyhow::Error::from)?;
-            self.runtime.block_on(self.execution.end_block(height))?;
+            run!(self, self.execution.end_block(height))?;
         }
         Ok(())
     }
@@ -397,24 +463,21 @@ impl ShieldExecutor {
     pub fn seal(&mut self) -> Result<B256, ShieldError> {
         let open = self.open.take().ok_or(ShieldError::NoOpenBlock)?;
         match open.mode {
-            BlockMode::Replay(h) => self.root_at(h),
-            BlockMode::Cached(_) => {
-                let pending = &self.pending[&open.id.hash];
-                if pending.outputs.len() != open.outputs.len() {
-                    return Err(ShieldError::CachedDiverged(open.id.hash));
+            BlockMode::Replay(h) => {
+                if open.outputs.len() != open.replay.len() {
+                    return Err(ShieldError::ReplayDiverged(h));
                 }
-                Ok(pending.root)
+                self.root_at(h)
             }
             BlockMode::Live(height) => {
-                let staged = self.runtime.block_on(self.execution.stage())?;
+                let staged = run!(self, self.execution.stage())?;
                 let root = to_b256(&staged.root_hash)?;
                 self.pending.insert(
-                    open.id.hash,
+                    root,
                     Pending {
                         height,
-                        parent: open.id.parent,
+                        parent: open.parent,
                         changes: staged.changes,
-                        root,
                         outputs: open.outputs,
                     },
                 );
@@ -423,16 +486,21 @@ impl ShieldExecutor {
         }
     }
 
-    /// Persists finalized block `hash` and any unfinalized ancestors, oldest
-    /// first, then drops every candidate that doesn't descend from it. A height
-    /// that is already finalized is a no-op (e.g. a notification after restart).
-    pub fn finalize(&mut self, hash: B256, height: u64) -> Result<B256, ShieldError> {
+    /// Persists the finalized block whose shieldd root is `root`, plus any
+    /// unfinalized ancestors, oldest first. Then drops every candidate that
+    /// doesn't build on it. A height that's already final is a no-op, so the
+    /// consensus layer can re-deliver finalized blocks after a restart.
+    pub fn finalize(&mut self, root: B256, height: u64) -> Result<B256, ShieldError> {
         let committed = self.last_committed.ok_or(ShieldError::NotInitialized)?;
         if height <= committed {
             return self.root_at(height);
         }
+        // An abandoned open block would keep shieldd out of its idle phase.
+        if self.open.take().is_some() {
+            self.execution.rollback();
+        }
         let mut chain = Vec::new();
-        let mut cur = hash;
+        let mut cur = root;
         loop {
             let p = self
                 .pending
@@ -444,50 +512,45 @@ impl ShieldExecutor {
             }
             cur = p.parent;
         }
-        let mut root = B256::ZERO;
         for block in chain.into_iter().rev() {
             let p = self.pending.remove(&block).expect("walked above");
-            let commit = self
-                .runtime
-                .block_on(self.execution.commit_staged(&p.changes))?;
-            root = to_b256(&commit.root_hash)?;
-            if root != p.root {
+            let commit = run!(self, self.execution.commit_staged(&p.changes))?;
+            let committed_root = to_b256(&commit.root_hash)?;
+            if committed_root != block {
                 return Err(ShieldError::RootMismatch {
                     height: p.height,
-                    staged: p.root,
-                    committed: root,
+                    staged: block,
+                    committed: committed_root,
                 });
             }
-            self.record(p.height, root)?;
-            self.tip_hash = Some(block);
+            self.record(p.height, block, &p.outputs)?;
         }
         self.prune();
         Ok(root)
     }
 
-    /// Pending ancestors of `id`, oldest first.
+    /// Pending ancestors of a block at `height` on `parent`, oldest first.
     fn ancestors(
         &self,
-        id: &BlockId,
+        parent: B256,
+        height: u64,
         committed: u64,
     ) -> Result<Vec<Arc<BlockChanges>>, ShieldError> {
-        let unknown = || ShieldError::UnknownParent {
-            height: id.height,
-            parent: id.parent,
-        };
+        let unknown = || ShieldError::UnknownParent { height, parent };
         let mut chain = Vec::new();
-        let (mut cur, mut height) = (id.parent, id.height);
-        while height - 1 > committed {
+        let (mut cur, mut h) = (parent, height);
+        while h - 1 > committed {
             let p = self.pending.get(&cur).ok_or_else(unknown)?;
-            if p.height != height - 1 {
+            if p.height != h - 1 {
                 return Err(unknown());
             }
             chain.push(p.changes.clone());
             cur = p.parent;
-            height -= 1;
+            h -= 1;
         }
-        // After a restart the tip hash is unknown, then the height is all we check.
-        if self.tip_hash.is_some_and(|tip| tip != cur) {
+        // Genesis leaves the root slot at zero, every later block writes it.
+        let tip_ok = cur == self.tip_root || (committed == 0 && cur.is_zero());
+        if !tip_ok {
             return Err(unknown());
         }
         chain.reverse();
@@ -497,33 +560,35 @@ impl ShieldExecutor {
     /// Keeps only candidates that build on the finalized tip.
     fn prune(&mut self) {
         let committed = self.last_committed.unwrap_or_default();
-        let Some(tip) = self.tip_hash else { return };
         let mut by_height: Vec<(u64, B256, B256)> = self
             .pending
             .iter()
-            .map(|(hash, p)| (p.height, *hash, p.parent))
+            .map(|(root, p)| (p.height, *root, p.parent))
             .collect();
         by_height.sort();
-        let mut live = std::collections::HashSet::from([tip]);
-        for (height, hash, parent) in by_height {
+        let mut live = HashSet::from([self.tip_root]);
+        for (height, root, parent) in by_height {
             if height > committed && live.contains(&parent) {
-                live.insert(hash);
+                live.insert(root);
             }
         }
-        self.pending.retain(|hash, _| live.contains(hash));
+        self.pending.retain(|root, _| live.contains(root));
     }
 
-    fn cached_output(&self, digest: B256) -> Result<Output, ShieldError> {
+    fn replayed(&self, digest: B256, height: u64) -> Result<Output, ShieldError> {
         let open = self.open.as_ref().ok_or(ShieldError::NoOpenBlock)?;
-        let recorded = &self.pending[&open.id.hash].outputs;
-        match recorded.get(open.outputs.len()) {
+        match open.replay.get(open.outputs.len()) {
             Some((d, out)) if *d == digest => Ok(out.clone()),
-            _ => Err(self.diverged()),
+            _ => Err(ShieldError::ReplayDiverged(height)),
         }
     }
 
     fn diverged(&self) -> ShieldError {
-        ShieldError::CachedDiverged(self.open.as_ref().map(|o| o.id.hash).unwrap_or_default())
+        let height = match self.open.as_ref().map(|o| o.mode) {
+            Some(BlockMode::Live(h) | BlockMode::Replay(h)) => h,
+            None => 0,
+        };
+        ShieldError::ReplayDiverged(height)
     }
 
     fn push_output(&mut self, digest: B256, out: Output) {
@@ -532,8 +597,29 @@ impl ShieldExecutor {
         }
     }
 
-    fn record(&mut self, height: u64, root: B256) -> Result<(), ShieldError> {
+    fn outputs_path(&self, height: u64) -> PathBuf {
+        self.outputs_dir.join(format!("{height:020}.json"))
+    }
+
+    fn load_outputs(&self, height: u64) -> Result<Outputs, ShieldError> {
+        let path = self.outputs_path(height);
+        match std::fs::read(&path) {
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes).map_err(anyhow::Error::from)?),
+            // Genesis and blocks with no shieldd work have nothing to replay.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(anyhow::anyhow!("read {}: {e}", path.display()).into()),
+        }
+    }
+
+    /// Persists outputs, then the root record. Outputs go first so a replay
+    /// never sees a committed height without them.
+    fn record(&mut self, height: u64, root: B256, outputs: &Outputs) -> Result<(), ShieldError> {
+        if !outputs.is_empty() {
+            let bytes = serde_json::to_vec(outputs).map_err(anyhow::Error::from)?;
+            std::fs::write(self.outputs_path(height), bytes).map_err(anyhow::Error::from)?;
+        }
         self.last_committed = Some(height);
+        self.tip_root = root;
         self.records
             .append(height, root)
             .map_err(|e| anyhow::anyhow!("append commit record {height}: {e}").into())
@@ -549,7 +635,7 @@ impl ShieldExecutor {
 }
 
 fn latest_root(runtime: &Runtime, storage: &Storage) -> Result<B256, ShieldError> {
-    let root = runtime.block_on(storage.latest_snapshot().root_hash())?;
+    let root = block_on(runtime, storage.latest_snapshot().root_hash())?;
     Ok(B256::from(root.0))
 }
 
@@ -564,18 +650,9 @@ mod tests {
     use shieldd_sdk_app::genesis::Content;
 
     const T0: i64 = 1_700_000_000;
-    const GENESIS: B256 = B256::ZERO;
 
     fn genesis() -> AppState {
         AppState::Content(Content::default().with_chain_id("bankd-v2-test".to_owned()))
-    }
-
-    fn id(hash: u8, parent: B256, height: u64) -> BlockId {
-        BlockId {
-            hash: B256::repeat_byte(hash),
-            parent,
-            height,
-        }
     }
 
     fn deposit(tx_index: u32) -> ShieldDeposit {
@@ -597,10 +674,11 @@ mod tests {
     }
 
     /// Runs one candidate with `deposits` host deposits and seals it.
-    fn run(exec: &mut ShieldExecutor, block: BlockId, deposits: u32) -> B256 {
-        exec.begin_block(block, T0 + block.height as i64).unwrap();
+    fn run(exec: &mut ShieldExecutor, parent: B256, height: u64, deposits: u32) -> B256 {
+        exec.begin_block(parent, height, T0 + height as i64)
+            .unwrap();
         for i in 0..deposits {
-            exec.deposit(deposit(i)).unwrap();
+            assert!(exec.deposit(deposit(i)).unwrap().is_some());
         }
         exec.end_block().unwrap();
         exec.seal().unwrap()
@@ -609,100 +687,101 @@ mod tests {
     #[test]
     fn competing_candidates_only_finalized_persists() {
         let (dir, mut exec) = fresh();
-        let genesis_root = exec.committed().unwrap().unwrap().1;
-        let a = id(0xa1, GENESIS, 1);
-        let b = id(0xb1, GENESIS, 1);
-        let root_a = run(&mut exec, a, 0);
-        let root_b = run(&mut exec, b, 1);
+        let genesis = exec.committed().unwrap();
+        let root_a = run(&mut exec, B256::ZERO, 1, 0);
+        let root_b = run(&mut exec, B256::ZERO, 1, 1);
         assert_ne!(root_a, root_b);
-        // Sealing wrote nothing.
-        assert_eq!(exec.committed().unwrap(), Some((0, genesis_root)));
+        assert_eq!(exec.committed(), Some(genesis), "sealing writes nothing");
 
-        assert_eq!(exec.finalize(b.hash, 1).unwrap(), root_b);
-        assert_eq!(exec.committed().unwrap(), Some((1, root_b)));
+        assert_eq!(exec.finalize(root_b, 1).unwrap(), root_b);
+        assert_eq!(exec.committed(), Some((1, root_b)));
         assert_eq!(exec.pending_len(), 0, "losing sibling is discarded");
         assert!(matches!(
-            exec.finalize(B256::repeat_byte(0xa1), 2),
+            exec.finalize(root_a, 2),
             Err(ShieldError::UnknownBlock(_))
         ));
 
         // Restart after finalize: same state, next block builds on it.
         drop(exec);
         let mut exec = ShieldExecutor::open(dir.path()).unwrap();
-        assert_eq!(exec.committed().unwrap(), Some((1, root_b)));
-        let c = id(0xc2, b.hash, 2);
-        run(&mut exec, c, 0);
-        exec.finalize(c.hash, 2).unwrap();
-        assert_eq!(exec.committed().unwrap().unwrap().0, 2);
+        assert_eq!(exec.committed(), Some((1, root_b)));
+        let root_c = run(&mut exec, root_b, 2, 0);
+        exec.finalize(root_c, 2).unwrap();
+        assert_eq!(exec.committed(), Some((2, root_c)));
     }
 
     #[test]
     fn child_of_unfinalized_parent_matches_sequential_commit() {
         let (_d1, mut exec) = fresh();
-        let p = id(0x01, GENESIS, 1);
-        let c = id(0x02, p.hash, 2);
-        let root_p = run(&mut exec, p, 1);
-        let root_c = run(&mut exec, c, 2);
-        // A dead fork off p's sibling must not survive finalization.
-        run(&mut exec, id(0x0f, GENESIS, 1), 0);
-        assert_eq!(exec.finalize(c.hash, 2).unwrap(), root_c);
+        let root_p = run(&mut exec, B256::ZERO, 1, 1);
+        let root_c = run(&mut exec, root_p, 2, 2);
+        // A dead fork next to p must not survive finalization.
+        run(&mut exec, B256::ZERO, 1, 0);
+        assert_eq!(exec.finalize(root_c, 2).unwrap(), root_c);
         assert_eq!(exec.pending_len(), 0);
         assert_eq!(exec.root_at(1).unwrap(), root_p);
 
         // A second node that finalizes every block right away agrees.
         let (_d2, mut other) = fresh();
-        assert_eq!(run(&mut other, p, 1), root_p);
-        other.finalize(p.hash, 1).unwrap();
-        assert_eq!(run(&mut other, c, 2), root_c);
-        other.finalize(c.hash, 2).unwrap();
-        assert_eq!(other.committed().unwrap(), exec.committed().unwrap());
+        assert_eq!(run(&mut other, B256::ZERO, 1, 1), root_p);
+        other.finalize(root_p, 1).unwrap();
+        assert_eq!(run(&mut other, root_p, 2, 2), root_c);
+        other.finalize(root_c, 2).unwrap();
+        assert_eq!(other.committed(), exec.committed());
     }
 
     #[test]
-    fn re_executing_a_sealed_block_is_cached() {
+    fn re_executing_a_candidate_gives_the_same_root() {
         let (_dir, mut exec) = fresh();
-        let b = id(0x11, GENESIS, 1);
-        let root = run(&mut exec, b, 1);
-        assert_eq!(exec.begin_block(b, T0).unwrap(), BlockMode::Cached(1));
+        let first = run(&mut exec, B256::ZERO, 1, 1);
+        assert_eq!(run(&mut exec, B256::ZERO, 1, 1), first);
+        assert_eq!(exec.pending_len(), 1);
+    }
+
+    #[test]
+    fn replay_guard_returns_recorded_outputs() {
+        let (dir, mut exec) = fresh();
+        let root = run(&mut exec, B256::ZERO, 1, 1);
+        exec.finalize(root, 1).unwrap();
+
+        // Restarted node replays block 1: same outputs, same root, nothing written.
+        drop(exec);
+        let mut exec = ShieldExecutor::open(dir.path()).unwrap();
+        assert_eq!(
+            exec.begin_block(B256::ZERO, 1, T0).unwrap(),
+            BlockMode::Replay(1)
+        );
         assert!(exec.deposit(deposit(0)).unwrap().is_some());
         assert!(matches!(
-            exec.deposit(deposit(9)),
-            Err(ShieldError::CachedDiverged(_))
+            exec.deposit(deposit(5)),
+            Err(ShieldError::ReplayDiverged(1))
         ));
-        exec.begin_block(b, T0).unwrap();
+        exec.begin_block(B256::ZERO, 1, T0).unwrap();
         exec.deposit(deposit(0)).unwrap();
         exec.end_block().unwrap();
         assert_eq!(exec.seal().unwrap(), root);
+        assert_eq!(exec.finalize(root, 1).unwrap(), root);
+        assert_eq!(exec.committed(), Some((1, root)));
     }
 
     #[test]
-    fn replay_guard_after_finalize() {
-        let (dir, mut exec) = fresh();
-        let b = id(0x21, GENESIS, 1);
-        let root = run(&mut exec, b, 1);
-        exec.finalize(b.hash, 1).unwrap();
-
-        // Restarted node replays block 1: no-op, same root, nothing written.
-        drop(exec);
-        let mut exec = ShieldExecutor::open(dir.path()).unwrap();
-        assert_eq!(exec.begin_block(b, T0).unwrap(), BlockMode::Replay(1));
-        assert!(exec.deposit(deposit(0)).unwrap().is_none());
-        assert!(matches!(
-            exec.deliver_tx(b"junk").unwrap(),
-            TxOutcome::Replayed
-        ));
+    fn refused_deposit_is_recorded_for_refund() {
+        let (_dir, mut exec) = fresh();
+        exec.begin_block(B256::ZERO, 1, T0 + 1).unwrap();
+        let mut bad = deposit(0);
+        bad.recipient = "not-an-address".to_owned();
+        assert_eq!(exec.deposit(bad).unwrap(), None);
         exec.end_block().unwrap();
-        assert_eq!(exec.seal().unwrap(), root);
-        assert_eq!(exec.finalize(b.hash, 1).unwrap(), root);
-        assert_eq!(exec.committed().unwrap(), Some((1, root)));
+        let root = exec.seal().unwrap();
+        // Same root as an empty block, the refused deposit changed nothing.
+        assert_eq!(run(&mut exec, B256::ZERO, 1, 0), root);
     }
 
     #[test]
     fn recovers_record_lost_after_shieldd_commit() {
         let (dir, mut exec) = fresh();
-        let b = id(0x31, GENESIS, 1);
-        let root = run(&mut exec, b, 1);
-        exec.finalize(b.hash, 1).unwrap();
+        let root = run(&mut exec, B256::ZERO, 1, 1);
+        exec.finalize(root, 1).unwrap();
         drop(exec);
         // Simulate a crash between shieldd commit and the record append.
         let log = dir.path().join("commit-roots.bin");
@@ -714,9 +793,20 @@ mod tests {
             .set_len(len - 40)
             .unwrap();
         let mut exec = ShieldExecutor::open(dir.path()).unwrap();
-        exec.begin_block(b, T0).unwrap();
+        exec.begin_block(B256::ZERO, 1, T0).unwrap();
+        exec.deposit(deposit(0)).unwrap();
         exec.end_block().unwrap();
         assert_eq!(exec.seal().unwrap(), root);
+    }
+
+    #[test]
+    fn calls_work_inside_another_tokio_runtime() {
+        let (_dir, mut exec) = fresh();
+        let outer = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let root = outer.block_on(async { run(&mut exec, B256::ZERO, 1, 1) });
+        assert_eq!(exec.finalize(root, 1).unwrap(), root);
     }
 
     #[test]
@@ -729,14 +819,18 @@ mod tests {
         ));
         exec.init_genesis(genesis()).unwrap();
         assert!(matches!(
-            exec.begin_block(id(0x55, B256::repeat_byte(0x54), 5), T0),
+            exec.begin_block(B256::repeat_byte(0x54), 5, T0),
             Err(ShieldError::UnknownParent { height: 5, .. })
+        ));
+        assert!(matches!(
+            exec.begin_block(B256::repeat_byte(0x54), 1, T0),
+            Err(ShieldError::UnknownParent { height: 1, .. })
         ));
         assert!(matches!(
             exec.check_tx(b"not a shielded tx"),
             Err(ShieldError::Rejected(_))
         ));
-        exec.begin_block(id(0x41, GENESIS, 1), T0).unwrap();
+        exec.begin_block(B256::ZERO, 1, T0).unwrap();
         assert!(matches!(
             exec.deliver_tx(b"not a shielded tx").unwrap(),
             TxOutcome::Rejected { .. }

@@ -22,7 +22,7 @@ use reth_storage_api::{
 };
 use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
-    TransactionValidator, error::InvalidPoolTransactionError,
+    TransactionValidator, error::InvalidPoolTransactionError, validate::ValidTransaction,
 };
 use revm::{
     DatabaseRef,
@@ -88,6 +88,17 @@ const MAX_KEYCHAIN_SELECTOR_RULES_PER_SCOPE: u8 = 64;
 /// Maximum number of recipients per selector rule.
 const MAX_KEYCHAIN_RECIPIENTS_PER_SELECTOR: u8 = 64;
 
+/// Checks a shielded (0x77) tx payload against shieldd (proof, fee, nullifiers) for pool
+/// admission. Implemented by the node on top of its shieldd executor.
+///
+/// Called from inside the pool's validation task, which runs a future via `Handle::block_on` on a
+/// tokio blocking thread. So an implementation must not `block_on` another runtime on the calling
+/// thread; hop to a plain OS thread (e.g. `std::thread::scope`) if it needs one.
+pub trait ShieldedTxChecker: Send + Sync + std::fmt::Debug + 'static {
+    /// Returns `Err(reason)` when shieldd would reject the payload.
+    fn check(&self, payload: &[u8]) -> Result<(), String>;
+}
+
 /// Validator for Tempo transactions.
 #[derive(Debug)]
 pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
@@ -103,6 +114,8 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     pub(crate) disable_fee_amm_check: bool,
     /// Addresses checked against transaction senders and direct call targets.
     address_filter: AddressFilter,
+    /// Shieldd check for 0x77 txs. `None` rejects them.
+    shielded_checker: Option<Arc<dyn ShieldedTxChecker>>,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
     cached_evm_env: RwLock<EvmEnv<TempoHardfork, TempoBlockEnv>>,
     /// Tip hash and cache of state reads shared across validation calls, replaced on each
@@ -149,6 +162,7 @@ where
             // bankd: gas is native BRL, the FeeAMM isn't on the fee path.
             disable_fee_amm_check: true,
             address_filter: AddressFilter::default(),
+            shielded_checker: None,
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
             active_hardfork,
@@ -165,6 +179,49 @@ where
     pub fn with_address_filter(mut self, address_filter: AddressFilter) -> Self {
         self.address_filter = address_filter;
         self
+    }
+
+    /// Enables 0x77 shielded txs, validated by `checker`.
+    pub fn with_shielded_checker(mut self, checker: Arc<dyn ShieldedTxChecker>) -> Self {
+        self.shielded_checker = Some(checker);
+        self
+    }
+
+    /// Validates a shielded tx: shieldd decides, the EVM, nonce, balance and compliance checks
+    /// don't apply (no signer, no EVM fee, fee paid inside the pool).
+    fn validate_shielded(
+        &self,
+        transaction: TempoPooledTransaction,
+    ) -> TransactionValidationOutcome<TempoPooledTransaction> {
+        let Some(checker) = self.shielded_checker.as_ref() else {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
+            );
+        };
+        let payload = transaction
+            .inner()
+            .shielded_payload()
+            .expect("checked by caller")
+            .clone();
+        match checker.check(&payload) {
+            Ok(()) => TransactionValidationOutcome::Valid {
+                // Every shielded tx has its own pseudo sender at nonce 0. The balance is only
+                // there so the nominal fee cap never parks it as underfunded.
+                balance: alloy_primitives::U256::MAX,
+                state_nonce: 0,
+                bytecode_hash: None,
+                transaction: ValidTransaction::Valid(transaction),
+                propagate: true,
+                authorities: None,
+            },
+            Err(reason) => TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(TempoPoolTransactionError::ShieldedRejected(
+                    reason,
+                )),
+            ),
+        }
     }
 
     /// Returns the Tempo hardfork active at the current tip.
@@ -405,6 +462,10 @@ where
     {
         // Get the hardfork active at the current tip
         let spec = self.active_hardfork();
+
+        if transaction.inner().is_shielded() {
+            return self.validate_shielded(transaction);
+        }
 
         // Reject system transactions, those are never allowed in the pool.
         if transaction.inner().is_system_tx() {
@@ -1071,6 +1132,7 @@ mod tests {
         let inner =
             EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::moderato())
                 .with_custom_tx_type(TempoTxType::AA as u8)
+                .with_custom_tx_type(TempoTxType::Shielded as u8)
                 .disable_balance_check()
                 .build(InMemoryBlobStore::default());
         let amm_cache =
@@ -1303,6 +1365,68 @@ mod tests {
                 ));
             }
             _ => panic!("Expected Invalid outcome with TxTypeNotSupported error, got: {outcome:?}"),
+        }
+    }
+
+    #[derive(Debug)]
+    struct StubShieldChecker(Result<(), String>);
+
+    impl ShieldedTxChecker for StubShieldChecker {
+        fn check(&self, _payload: &[u8]) -> Result<(), String> {
+            self.0.clone()
+        }
+    }
+
+    fn shielded_pool_tx() -> TempoPooledTransaction {
+        use alloy_consensus::transaction::SignerRecoverable;
+        let envelope = TempoTxEnvelope::from(tempo_primitives::TxShielded::new(
+            alloy_primitives::Bytes::from_static(b"shielded payload"),
+        ));
+        let sender = envelope.recover_signer().unwrap();
+        TempoPooledTransaction::new(reth_primitives_traits::Recovered::new_unchecked(
+            envelope, sender,
+        ))
+    }
+
+    #[tokio::test]
+    async fn test_shielded_tx_needs_checker_and_its_ok() {
+        let transaction = shielded_pool_tx();
+
+        let validator = setup_validator(&transaction, 0);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction.clone())
+            .await;
+        assert!(matches!(
+            outcome,
+            TransactionValidationOutcome::Invalid(
+                _,
+                InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported)
+            )
+        ));
+
+        let validator = setup_validator(&transaction, 0)
+            .with_shielded_checker(Arc::new(StubShieldChecker(Ok(()))));
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction.clone())
+            .await;
+        assert!(
+            matches!(
+                outcome,
+                TransactionValidationOutcome::Valid { state_nonce: 0, .. }
+            ),
+            "got {outcome:?}"
+        );
+
+        let validator = setup_validator(&transaction, 0)
+            .with_shielded_checker(Arc::new(StubShieldChecker(Err("nullifier spent".into()))));
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, err) => {
+                assert!(err.to_string().contains("nullifier spent"), "{err}");
+            }
+            other => panic!("expected Invalid, got {other:?}"),
         }
     }
 

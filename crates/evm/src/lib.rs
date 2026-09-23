@@ -6,6 +6,7 @@
 mod action_replay;
 mod assemble;
 mod pool;
+pub mod shield;
 pub use action_replay::{
     ExpiringNonceReplay, StorageActionReplay, StorageActionReplayError, StorageActionReplayOutcome,
     StorageActionReplayState,
@@ -66,6 +67,9 @@ pub struct TempoEvmConfig {
 
     /// Block assembler
     pub block_assembler: TempoBlockAssembler,
+
+    /// Embedded shieldd engine every block executor drives. `None` runs without it.
+    pub shield: Option<shield::ShieldHandle>,
 }
 
 impl FeeTokenResolver for TempoEvmConfig {
@@ -92,7 +96,14 @@ impl TempoEvmConfig {
         Self {
             inner,
             block_assembler: TempoBlockAssembler::new(chain_spec),
+            shield: None,
         }
+    }
+
+    /// Runs the embedded shieldd engine in every block this config executes.
+    pub fn with_shield(mut self, shield: shield::ShieldHandle) -> Self {
+        self.shield = Some(shield);
+        self
     }
 
     /// Uses the provided sender recovery cache.
@@ -143,7 +154,7 @@ impl BlockExecutorFactory for TempoEvmConfig {
         DB: StateDB,
         I: Inspector<TempoContext<DB>>,
     {
-        TempoBlockExecutor::new(evm, ctx, self.chain_spec())
+        TempoBlockExecutor::new(evm, ctx, self.chain_spec(), self.shield.clone())
     }
 }
 

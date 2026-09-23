@@ -604,6 +604,10 @@ pub enum TempoPoolTransactionError {
     #[error("Tempo Transaction with subblock nonce key prefix aren't supported in the pool")]
     SubblockNonceKey,
 
+    /// A shielded (0x77) transaction failed shieldd's proof, fee or nullifier checks.
+    #[error("shielded transaction rejected: {0}")]
+    ShieldedRejected(String),
+
     /// An AA transaction has too many Tempo authorizations.
     ///
     /// Thrown during pool admission when the AA transaction's authorization list
@@ -757,6 +761,8 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::KeyAuthorizationExpired { .. }
             | Self::AddressCheck { .. }
             | Self::Keychain(_) => false,
+            // Shieldd state moves (spent nullifiers, anchors), so don't penalize the peer.
+            Self::ShieldedRejected(_) => false,
             Self::SubblockNonceKey
             | Self::TooManyAuthorizations { .. }
             | Self::TooManyCalls { .. }

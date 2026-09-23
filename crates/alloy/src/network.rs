@@ -154,6 +154,8 @@ impl NetworkTransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     fn complete_type(&self, ty: TempoTxType) -> Result<(), Vec<&'static str>> {
         match ty {
             TempoTxType::AA => self.complete_aa(),
+            // Shielded txs are built by shieldd tooling, never from a request.
+            TempoTxType::Shielded => Err(vec!["shielded payload"]),
             TempoTxType::Legacy
             | TempoTxType::Eip2930
             | TempoTxType::Eip1559
@@ -190,6 +192,7 @@ impl NetworkTransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     fn output_tx_type_checked(&self) -> Option<TempoTxType> {
         match self.output_tx_type() {
             TempoTxType::AA => self.can_build_aa().then_some(TempoTxType::AA),
+            TempoTxType::Shielded => None,
             TempoTxType::Legacy
             | TempoTxType::Eip2930
             | TempoTxType::Eip1559

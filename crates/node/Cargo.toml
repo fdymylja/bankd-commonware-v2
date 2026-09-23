@@ -16,6 +16,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+bankd-shield.workspace = true
+tempo-contracts.workspace = true
+tracing.workspace = true
 tempo-alloy = { workspace = true, features = ["reth"] }
 tempo-evm = { workspace = true, features = ["rpc", "engine"] }
 tempo-transaction-pool.workspace = true

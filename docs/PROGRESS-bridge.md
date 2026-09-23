@@ -99,7 +99,7 @@ They're real, not hand-made:
 
 ## Gaps
 
-- Relayer: no timeouts, no retries (any error kills it), no batching, no restart recovery (it only sees events after it subscribes). One key for both chains. It relies on `consensus_getFinalization` still having old boundary heights when catching up. That worked here, but pruning limits are untested.
+- Relayer: no timeouts (timed out packets are just skipped), no batching. Restart recovery rescans logs from `{A,B}_FROM_BLOCK` (default 0) every start, so no saved cursor yet. It relies on `consensus_getFinalization` still having old boundary heights when catching up. That worked here, but pruning limits are untested.
 - No trusting period. A retired committee can't sign for newer epochs, but its key stays valid for its own epoch while that's still the latest.
 - `misbehaviour()` isn't implemented. Conflicting headers only freeze the client if both get submitted via `updateClient`.
 - Proofs aren't cached per tx (Besu does this with transient storage), so batching many packets repeats the account proof.

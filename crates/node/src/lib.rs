@@ -30,6 +30,7 @@ pub mod engine;
 pub mod gossip;
 pub mod node;
 pub mod rpc;
+pub mod shield;
 pub mod telemetry;
 pub use tempo_evm as evm;
 pub use tempo_evm::consensus;

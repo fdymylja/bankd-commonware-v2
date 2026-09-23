@@ -6,7 +6,9 @@
 //! an EVM frame reverts, while logs revert for free.
 
 use super::{bankd_err, compliance::ensure_not_blocked};
-use crate::{Precompile, charge_input_cost, dispatch, error::Result, mutate, storage::Handler, view};
+use crate::{
+    Precompile, charge_input_cost, dispatch, error::Result, mutate, storage::Handler, view,
+};
 use alloy::primitives::{Address, B256, U256};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{BankdError, IShield, SHIELD_ADDRESS, SHIELD_BRL_DENOM};
@@ -66,7 +68,10 @@ impl Shield {
 
     /// Binds the call value, which the generic [`Precompile`] trait doesn't carry.
     pub fn with_value(self, value: U256) -> ShieldCall {
-        ShieldCall { shield: self, value }
+        ShieldCall {
+            shield: self,
+            value,
+        }
     }
 }
 
@@ -106,7 +111,7 @@ mod tests {
         storage::{PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
-    use alloy::sol_types::{SolEvent, SolInterface};
+    use alloy::sol_types::SolEvent;
     use tempo_contracts::precompiles::COMPLIANCE_ADDRESS;
 
     fn setup_storage() -> (HashMapStorageProvider, Address) {
@@ -144,7 +149,10 @@ mod tests {
             assert!(shield.deposit(sender, U256::from(7), recipient())?);
             Ok::<_, eyre::Report>(())
         })?;
-        let log = storage.get_events(SHIELD_ADDRESS).last().expect("event emitted");
+        let log = storage
+            .get_events(SHIELD_ADDRESS)
+            .last()
+            .expect("event emitted");
         let ev = IShield::ShielddDeposit::decode_log_data(log)?;
         assert_eq!(ev.sender, sender);
         assert_eq!(ev.amount, U256::from(7));

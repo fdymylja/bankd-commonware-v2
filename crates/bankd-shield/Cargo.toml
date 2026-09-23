@@ -21,13 +21,16 @@ workspace = true
 shieldd-sdk-app = { path = "../../shieldd/crates/core/app" }
 shieldd-sdk-proto = { path = "../../shieldd/crates/proto" }
 shieldd-sdk-sct = { path = "../../shieldd/crates/core/component/sct", features = ["component"] }
+shieldd-sdk-shielded-pool = { path = "../../shieldd/crates/core/component/shielded-pool" }
 shieldd-sdk-transaction = { path = "../../shieldd/crates/core/transaction" }
 # Patched at the workspace root to the vendored copy (rocksdb 0.24, same as reth).
 cnidarium = { version = "0.83", features = ["migration"] }
 tendermint = { version = "0.40.3", default-features = false }
 
-alloy-primitives.workspace = true
+alloy-primitives = { workspace = true, features = ["serde"] }
 anyhow = "1"
+serde = { workspace = true, features = ["std"] }
+serde_json = { workspace = true, features = ["std"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 tracing.workspace = true

@@ -56,6 +56,7 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) extra_data: Bytes,
     // Test state to seed into the executor after creation
     pub(crate) initial_section: Option<BlockSection>,
+    pub(crate) shield: Option<crate::shield::ShieldHandle>,
 }
 
 impl Default for TestExecutorBuilder {
@@ -71,6 +72,7 @@ impl Default for TestExecutorBuilder {
             spec: TempoHardfork::default(),
             extra_data: Bytes::new(),
             initial_section: None,
+            shield: None,
         }
     }
 }
@@ -110,6 +112,12 @@ impl TestExecutorBuilder {
     /// behavior independently of the T4 hardfork.
     pub(crate) fn with_amsterdam_eip8037_enabled(mut self, enabled: bool) -> Self {
         self.amsterdam_eip8037_enabled = enabled;
+        self
+    }
+
+    /// Runs blocks through a shieldd engine.
+    pub(crate) fn with_shield(mut self, shield: crate::shield::ShieldHandle) -> Self {
+        self.shield = Some(shield);
         self
     }
 
@@ -160,7 +168,7 @@ impl TestExecutorBuilder {
             consensus_context: None,
         };
 
-        let mut executor = TempoBlockExecutor::new(evm, ctx, chainspec);
+        let mut executor = TempoBlockExecutor::new(evm, ctx, chainspec, self.shield);
 
         // Apply test-specific initial state
         if let Some(section) = self.initial_section {

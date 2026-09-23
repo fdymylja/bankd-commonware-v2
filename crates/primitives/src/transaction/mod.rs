@@ -1,5 +1,6 @@
 pub mod envelope;
 pub mod key_authorization;
+pub mod shielded;
 pub mod tempo_transaction;
 pub mod tt_authorization;
 pub mod tt_signature;
@@ -18,6 +19,10 @@ pub use envelope::{TempoTxEnvelope, TempoTxType, TempoTypedTransaction};
 pub use key_authorization::{
     CallScope, KeyAuthorization, KeyAuthorizationChainIdError, SelectorRule,
     SignedKeyAuthorization, TokenLimit,
+};
+pub use shielded::{
+    SHIELD_ADDRESS, SHIELDED_TX_FEE_CAP, SHIELDED_TX_GAS, SHIELDED_TX_TYPE_ID, TxShielded,
+    shielded_sender,
 };
 pub use tempo_transaction::{
     Call, FEE_PAYER_SIGNATURE_MARKER, InvalidValidAfter, InvalidValidBefore,

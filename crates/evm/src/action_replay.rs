@@ -43,6 +43,14 @@ where
     ) -> Result<(), BlockExecutionError> {
         let (tx_env, recovered) = tx.into_parts();
 
+        // Prewarm ran a 0x77 tx as a plain EVM call, its actions mean nothing. Shieldd runs it.
+        if recovered.tx().is_shielded() {
+            let output = self.execute_transaction_without_commit((tx_env, recovered))?;
+            result_closure(&output);
+            self.commit_transaction(output);
+            return Ok(());
+        }
+
         let StorageActionReplay {
             result,
             mut actions,

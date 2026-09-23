@@ -24,6 +24,11 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
 
                 Ok(tx.into_signed(signature).into())
             }
+            // Requests never build shielded txs (see `output_tx_type`), they come from shieldd.
+            TempoTxType::Shielded => Err(ValueError::new(
+                self,
+                "shielded transactions can't be simulated from a request",
+            )),
             TempoTxType::Legacy
             | TempoTxType::Eip2930
             | TempoTxType::Eip1559

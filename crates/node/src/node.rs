@@ -535,6 +535,16 @@ where
         if let Some(cache) = ctx.sender_recovery_cache() {
             evm_config = evm_config.with_sender_recovery_cache(cache.clone());
         }
+        if std::env::var_os(crate::shield::SHIELD_DISABLE_ENV).is_none() {
+            let home = ctx.config().datadir().data_dir().join("shieldd");
+            let chain_id = ctx.chain_spec().chain().id();
+            // Opening shieldd blocks on its own runtime, keep that off the async workers.
+            let shield = tokio::task::spawn_blocking(move || {
+                crate::shield::BankdShield::open(&home, chain_id)
+            })
+            .await??;
+            evm_config = evm_config.with_shield(shield.handle());
+        }
         Ok(evm_config)
     }
 }
@@ -762,6 +772,10 @@ where
 
         // this store is effectively a noop
         let blob_store = InMemoryBlobStore::default();
+        let shield_checker = evm_config
+            .shield
+            .clone()
+            .map(crate::shield::PoolChecker::new);
         let validator =
             TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone(), evm_config)
                 .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
@@ -773,6 +787,7 @@ where
                 .with_minimum_priority_fee(ctx.config().txpool.minimum_priority_fee)
                 .with_additional_tasks(ctx.config().txpool.additional_validation_tasks)
                 .with_custom_tx_type(TempoTxType::AA as u8)
+                .with_custom_tx_type(TempoTxType::Shielded as u8)
                 .no_eip4844()
                 .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
 
@@ -798,14 +813,18 @@ where
         let validator = validator.map(move |mut v| {
             v.set_additional_stateless_validation_fn_opt(additional_stateless_validation.clone());
             v.set_additional_stateful_validation_fn_opt(additional_stateful_validation.clone());
-            TempoTransactionValidator::new(
+            let validator = TempoTransactionValidator::new(
                 v,
                 aa_valid_after_max_secs,
                 max_tempo_authorizations,
                 amm_liquidity_cache.clone(),
             )
             .with_disable_fee_amm_check(disable_fee_amm_check)
-            .with_address_filter(address_filter.clone())
+            .with_address_filter(address_filter.clone());
+            match &shield_checker {
+                Some(checker) => validator.with_shielded_checker(checker.clone()),
+                None => validator,
+            }
         });
         let protocol_pool = Pool::new(
             validator,

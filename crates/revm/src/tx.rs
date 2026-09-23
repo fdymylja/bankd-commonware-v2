@@ -412,6 +412,30 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
                 ..Default::default()
             },
             TempoTxEnvelope::AA(tx) => Self::from_recovered_tx(tx, sender),
+            // The block executor hands 0x77 to shieldd before the EVM, so this plain call env
+            // only matters to prewarming and tracing. Zero price keeps it from charging anyone.
+            TempoTxEnvelope::Shielded(inner) => Self {
+                inner: TxEnv {
+                    tx_type: tempo_primitives::SHIELDED_TX_TYPE_ID,
+                    caller: sender,
+                    gas_limit: tempo_primitives::SHIELDED_TX_GAS,
+                    gas_price: 0,
+                    kind: alloy_primitives::TxKind::Call(
+                        tempo_primitives::transaction::SHIELD_ADDRESS,
+                    ),
+                    value: alloy_primitives::U256::ZERO,
+                    data: inner.inner().input.clone(),
+                    nonce: 0,
+                    chain_id: None,
+                    gas_priority_fee: Some(0),
+                    ..Default::default()
+                },
+                execution_context: ExecutionContext::Transaction {
+                    tx_hash: *tx.tx_hash(),
+                },
+                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
+                ..Default::default()
+            },
         }
     }
 }

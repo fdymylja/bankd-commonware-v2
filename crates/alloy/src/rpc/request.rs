@@ -381,6 +381,9 @@ impl From<TempoTxEnvelope> for TempoTransactionRequest {
             TempoTxEnvelope::Eip1559(tx) => tx.into(),
             TempoTxEnvelope::Eip7702(tx) => tx.into(),
             TempoTxEnvelope::AA(tx) => tx.into(),
+            TempoTxEnvelope::Shielded(tx) => {
+                TempoTypedTransaction::Shielded(tx.into_inner()).into()
+            }
         }
     }
 }
@@ -498,6 +501,17 @@ impl From<TempoTypedTransaction> for TempoTransactionRequest {
                 ..Default::default()
             },
             TempoTypedTransaction::AA(tx) => tx.into(),
+            TempoTypedTransaction::Shielded(tx) => Self {
+                inner: TransactionRequest {
+                    to: Some(alloy_primitives::TxKind::Call(
+                        tempo_primitives::transaction::SHIELD_ADDRESS,
+                    )),
+                    input: tx.input.into(),
+                    transaction_type: Some(tempo_primitives::SHIELDED_TX_TYPE_ID),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
         }
     }
 }

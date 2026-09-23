@@ -8,6 +8,7 @@ impl reth_primitives_traits::InMemorySize for TempoTxEnvelope {
             Self::Eip1559(tx) => tx.size(),
             Self::Eip7702(tx) => tx.size(),
             Self::AA(tx) => tx.size(),
+            Self::Shielded(tx) => size_of::<alloy_primitives::B256>() + tx.inner().input.len(),
         }
     }
 }
@@ -18,6 +19,7 @@ mod codec {
         TempoSignature, TempoTransaction,
         transaction::{
             envelope::{TEMPO_SYSTEM_TX_SIGNATURE, TempoTxEnvelope, TempoTxType},
+            shielded::TxShielded,
             tt_signed::AASigned,
         },
     };
@@ -81,6 +83,11 @@ mod codec {
                     let tx = AASigned::new_unhashed(tx, aa_sig);
                     (Self::AA(tx), buf)
                 }
+                TempoTxType::Shielded => {
+                    // Signature is a zero placeholder, the payload is the whole rest.
+                    let (input, buf) = Bytes::from_compact(buf, buf.len());
+                    (Self::Shielded(TxShielded::new(input).seal()), buf)
+                }
             }
         }
     }
@@ -97,6 +104,7 @@ mod codec {
                     len += tx.signature().to_compact(buf);
                     len
                 }
+                Self::Shielded(tx) => tx.inner().input.to_compact(buf),
             };
         }
     }
@@ -118,6 +126,8 @@ mod codec {
                     // is ignored for the AA variant.
                     &TEMPO_SYSTEM_TX_SIGNATURE
                 }
+                // Unsigned, same zero placeholder as AA.
+                Self::Shielded(_) => &TEMPO_SYSTEM_TX_SIGNATURE,
             }
         }
 
@@ -143,6 +153,10 @@ mod codec {
                     buf.put_u8(crate::transaction::TEMPO_TX_TYPE_ID);
                     COMPACT_EXTENDED_IDENTIFIER_FLAG
                 }
+                Self::Shielded => {
+                    buf.put_u8(crate::transaction::SHIELDED_TX_TYPE_ID);
+                    COMPACT_EXTENDED_IDENTIFIER_FLAG
+                }
             }
         }
 
@@ -158,6 +172,7 @@ mod codec {
                         match extended_identifier {
                             EIP7702_TX_TYPE_ID => Self::Eip7702,
                             crate::transaction::TEMPO_TX_TYPE_ID => Self::AA,
+                            crate::transaction::SHIELDED_TX_TYPE_ID => Self::Shielded,
                             _ => panic!("Unsupported TxType identifier: {extended_identifier}"),
                         }
                     }
@@ -199,6 +214,35 @@ mod codec {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn shielded_compact_roundtrip() {
+            use alloy_consensus::transaction::TxHashRef;
+            let envelope = TempoTxEnvelope::from(TxShielded::new(Bytes::from_static(b"shh")));
+            let mut buf = Vec::new();
+            let len = Compact::to_compact(&envelope, &mut buf);
+            let (decoded, _) = <TempoTxEnvelope as Compact>::from_compact(&buf, len);
+            assert_eq!(decoded, envelope);
+            assert_eq!(decoded.tx_hash(), envelope.tx_hash());
+
+            let mut ty = Vec::new();
+            let id = TempoTxType::Shielded.to_compact(&mut ty);
+            assert_eq!(TempoTxType::from_compact(&ty, id).0, TempoTxType::Shielded);
+        }
+
+        #[test]
+        fn shielded_receipt_compact_roundtrip() {
+            let receipt = crate::TempoReceipt {
+                tx_type: TempoTxType::Shielded,
+                success: true,
+                cumulative_gas_used: 250_000,
+                logs: vec![],
+            };
+            let mut buf = Vec::new();
+            let len = receipt.to_compact(&mut buf);
+            let (decoded, _) = crate::TempoReceipt::from_compact(&buf, len);
+            assert_eq!(decoded, receipt);
+        }
         use crate::transaction::tt_signed::tests::arb_tempo_tx;
         use proptest::prelude::*;
         use proptest_arbitrary_interop::arb;

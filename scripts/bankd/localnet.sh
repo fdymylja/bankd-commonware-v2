@@ -3,6 +3,7 @@
 #
 #   localnet.sh up   [chain_id] [rpc_port] [consensus_port] [validators] [epoch_length]
 #   localnet.sh down [chain_id]
+#   localnet.sh restart [chain_id] [rpc_port] [consensus_port] [validators]   (keeps data)
 #
 # Validator i gets http+ws on rpc_port+i and consensus/p2p ports from consensus_port+10*i.
 # Data and logs live in $BANKD_LOCALNET_DIR/<chain_id> (default target/bankd-localnet).
@@ -67,6 +68,16 @@ up() {
   mv "$DIR.gen.log" "$DIR/generate.log"
   printf '%s\n' "$SECRET" >"$DIR/consensus.secret"
 
+  launch
+}
+
+# Starts every validator in $DIR and waits for finality. Shared by up and restart.
+launch() {
+  local peers=()
+  for ((i = 0; i < VALIDATORS; i++)); do
+    peers+=("127.0.0.1:$((CONSENSUS_PORT + 10 * i))")
+  done
+
   local trusted=()
   for addr in "${peers[@]}"; do
     local port="${addr##*:}"
@@ -100,7 +111,7 @@ up() {
       --p2p-secret-key "$node_dir/enode.key" \
       --authrpc.port "$((port + 3))" \
       --log.file.directory "$node_dir/logs" --color never \
-      >"$node_dir/node.log" 2>&1 &
+      >>"$node_dir/node.log" 2>&1 &
     echo $! >"$node_dir/node.pid"
     echo "validator $i: rpc http/ws 127.0.0.1:$rpc  log $node_dir/node.log"
   done
@@ -121,8 +132,28 @@ up() {
   exit 1
 }
 
+# Stops the validators but keeps their data, then starts them again.
+restart() {
+  [[ -d "$DIR" ]] || { echo "chain $CHAIN_ID has no state at $DIR" >&2; exit 1; }
+  for pidf in "$DIR"/*/node.pid; do
+    [[ -f "$pidf" ]] || continue
+    kill "$(cat "$pidf")" 2>/dev/null || true
+  done
+  for pidf in "$DIR"/*/node.pid; do
+    [[ -f "$pidf" ]] || continue
+    for _ in $(seq 1 30); do
+      kill -0 "$(cat "$pidf")" 2>/dev/null || break
+      sleep 1
+    done
+    kill -9 "$(cat "$pidf")" 2>/dev/null || true
+  done
+  echo "chain $CHAIN_ID stopped, restarting"
+  launch
+}
+
 case "$cmd" in
   up) up ;;
   down) down ;;
-  *) echo "usage: $0 up|down [chain_id] [rpc_port] [consensus_port] [validators] [epoch_length]" >&2; exit 2 ;;
+  restart) restart ;;
+  *) echo "usage: $0 up|down|restart [chain_id] [rpc_port] [consensus_port] [validators] [epoch_length]" >&2; exit 2 ;;
 esac

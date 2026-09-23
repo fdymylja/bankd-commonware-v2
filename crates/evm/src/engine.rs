@@ -82,7 +82,8 @@ impl RecoveredInBlock {
         let tx = &block.body().transactions[index];
         let sender = if let Some(sender) = recovered_sender {
             sender
-        } else if tx.is_system_tx() {
+        } else if tx.is_system_tx() || tx.is_shielded() {
+            // No ECDSA signature to cache, the sender is derived from the tx hash.
             tx.try_recover()?
         } else if let Some(cache) = sender_recovery_cache {
             cache.recover(tx)?

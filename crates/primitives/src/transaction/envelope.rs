@@ -1,12 +1,13 @@
 use super::{
+    shielded::{TxShielded, shielded_sender},
     tempo_transaction::{InvalidValidAfter, InvalidValidBefore},
     tt_signed::AASigned,
     unique_tx_identifier_from_signable,
 };
 use crate::{TempoAddressExt, TempoTransaction};
 use alloy_consensus::{
-    EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
-    TxLegacy, TxType, TypedTransaction,
+    EthereumTxEnvelope, Sealed, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930,
+    TxEip7702, TxLegacy, TxType, TypedTransaction,
     crypto::RecoveryError,
     error::{UnsupportedTransactionType, ValueError},
     transaction::Either,
@@ -63,6 +64,10 @@ pub enum TempoTxEnvelope {
     /// Tempo transaction (type 0x76)
     #[envelope(ty = 0x76, typed = TempoTransaction)]
     AA(AASigned),
+
+    /// Shielded transaction (type 0x77): opaque shieldd tx, no ECDSA signer
+    #[envelope(ty = 0x77)]
+    Shielded(Sealed<TxShielded>),
 }
 
 impl TryFrom<TxType> for TempoTxType {
@@ -90,6 +95,9 @@ impl TryFrom<TempoTxType> for TxType {
             TempoTxType::Eip7702 => Self::Eip7702,
             TempoTxType::AA => {
                 return Err(UnsupportedTransactionType::new(TempoTxType::AA));
+            }
+            TempoTxType::Shielded => {
+                return Err(UnsupportedTransactionType::new(TempoTxType::Shielded));
             }
         })
     }
@@ -179,6 +187,8 @@ impl TempoTxEnvelope {
             Self::Eip1559(tx) => unique_tx_identifier_from_signable(tx.tx(), sender),
             Self::Eip7702(tx) => unique_tx_identifier_from_signable(tx.tx(), sender),
             Self::AA(tx) => unique_tx_identifier_from_signable(tx.tx(), sender),
+            // Its sender is already derived from the tx hash, so the hash is unique enough.
+            Self::Shielded(tx) => tx.hash(),
         }
     }
 
@@ -190,6 +200,7 @@ impl TempoTxEnvelope {
             Self::Eip1559(_) => TempoTxType::Eip1559,
             Self::Eip7702(_) => TempoTxType::Eip7702,
             Self::AA(_) => TempoTxType::AA,
+            Self::Shielded(_) => TempoTxType::Shielded,
         }
     }
 
@@ -247,6 +258,7 @@ impl TempoTxEnvelope {
             Self::Eip1559(tx) => is_tip20_call(tx.tx().to.to()),
             Self::Eip7702(tx) => is_tip20_call(Some(&tx.tx().to)),
             Self::AA(tx) => tx.tx().calls.iter().all(|call| is_tip20_call(call.to.to())),
+            Self::Shielded(_) => false,
         }
     }
 
@@ -296,6 +308,7 @@ impl TempoTxEnvelope {
                         .iter()
                         .all(|call| is_tip1045_call(call.to.to(), &call.input))
             }
+            Self::Shielded(_) => false,
         }
     }
 
@@ -326,6 +339,19 @@ impl TempoTxEnvelope {
     /// Returns true if this is a Tempo transaction
     pub fn is_aa(&self) -> bool {
         matches!(self, Self::AA(_))
+    }
+
+    /// Returns true if this is a shielded (0x77) transaction.
+    pub fn is_shielded(&self) -> bool {
+        matches!(self, Self::Shielded(_))
+    }
+
+    /// Returns the opaque shieldd tx bytes of a shielded transaction.
+    pub fn shielded_payload(&self) -> Option<&Bytes> {
+        match self {
+            Self::Shielded(tx) => Some(&tx.inner().input),
+            _ => None,
+        }
     }
 
     /// Returns iterator over the calls in the transaction.
@@ -361,6 +387,7 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
                 alloy_consensus::transaction::SignerRecoverable::recover_signer(tx)
             }
             Self::AA(tx) => alloy_consensus::transaction::SignerRecoverable::recover_signer(tx),
+            Self::Shielded(tx) => Ok(shielded_sender(tx.hash())),
         }
     }
 
@@ -384,6 +411,7 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
             Self::AA(tx) => {
                 alloy_consensus::transaction::SignerRecoverable::recover_signer_unchecked(tx)
             }
+            Self::Shielded(tx) => Ok(shielded_sender(tx.hash())),
         }
     }
 }
@@ -396,6 +424,7 @@ impl alloy_consensus::transaction::TxHashRef for TempoTxEnvelope {
             Self::Eip1559(tx) => tx.hash(),
             Self::Eip7702(tx) => tx.hash(),
             Self::AA(tx) => tx.hash(),
+            Self::Shielded(tx) => tx.hash_ref(),
         }
     }
 }
@@ -408,6 +437,7 @@ impl fmt::Display for TempoTxType {
             Self::Eip1559 => write!(f, "EIP-1559"),
             Self::Eip7702 => write!(f, "EIP-7702"),
             Self::AA => write!(f, "AA"),
+            Self::Shielded => write!(f, "Shielded"),
         }
     }
 }
@@ -459,6 +489,12 @@ impl From<AASigned> for TempoTxEnvelope {
     }
 }
 
+impl From<TxShielded> for TempoTxEnvelope {
+    fn from(value: TxShielded) -> Self {
+        Self::Shielded(value.seal())
+    }
+}
+
 impl From<Signed<TempoTypedTransaction>> for TempoTxEnvelope {
     fn from(value: Signed<TempoTypedTransaction>) -> Self {
         let sig = *value.signature();
@@ -479,6 +515,7 @@ impl SignableTransaction<Signature> for TempoTypedTransaction {
             Self::Eip1559(tx) => tx.encode_for_signing(out),
             Self::Eip7702(tx) => tx.encode_for_signing(out),
             Self::AA(tx) => tx.encode_for_signing(out),
+            Self::Shielded(tx) => tx.encode_2718(out),
         }
     }
 
@@ -489,6 +526,7 @@ impl SignableTransaction<Signature> for TempoTypedTransaction {
             Self::Eip1559(tx) => tx.payload_len_for_signature(),
             Self::Eip7702(tx) => tx.payload_len_for_signature(),
             Self::AA(tx) => tx.payload_len_for_signature(),
+            Self::Shielded(tx) => tx.encode_2718_len(),
         }
     }
 }
@@ -502,12 +540,15 @@ impl TempoTypedTransaction {
             Self::Eip1559(tx) => tx.into_signed(sig).into(),
             Self::Eip7702(tx) => tx.into_signed(sig).into(),
             Self::AA(tx) => tx.into_signed(sig.into()).into(),
+            // Shielded txs carry no signature, it's ignored.
+            Self::Shielded(tx) => tx.into(),
         }
     }
 
     /// Returns a dyn mutable reference to the underlying transaction
     pub fn as_dyn_signable_mut(&mut self) -> &mut dyn SignableTransaction<Signature> {
         match self {
+            Self::Shielded(tx) => tx,
             Self::Legacy(tx) => tx,
             Self::Eip2930(tx) => tx,
             Self::Eip1559(tx) => tx,
@@ -541,6 +582,7 @@ impl From<TempoTxEnvelope> for TempoTypedTransaction {
             TempoTxEnvelope::Eip1559(tx) => Self::Eip1559(tx.into_parts().0),
             TempoTxEnvelope::Eip7702(tx) => Self::Eip7702(tx.into_parts().0),
             TempoTxEnvelope::AA(tx) => Self::AA(tx.into_parts().0),
+            TempoTxEnvelope::Shielded(tx) => Self::Shielded(tx.into_inner()),
         }
     }
 }

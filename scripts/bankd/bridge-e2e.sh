@@ -6,6 +6,9 @@
 #   EPOCH_LENGTH=30 ...      short epochs, so the light clients rotate keys during the run
 #   HUB_PORT/HUB_CONS/SPOKE_PORT/SPOKE_CONS override the default ports
 #
+# The relayer uses its own key per chain (anvil acct 1 on the hub, acct 2 on the spoke), each
+# granted RELAYER_ROLE on that chain's router. It gets restarted mid-run to check it catches up.
+#
 # Flow: hub sends 5 BRL -> spoke receiver gets 5 native BRL (minted by the adapter through the
 # Native precompile) -> receiver sends 2 BRL back -> hub releases 2 from escrow. Acks are relayed
 # both ways. Everything goes through the real CommonwareLightClient on each side.
@@ -26,11 +29,14 @@ SPOKE="http://127.0.0.1:$SPOKE_PORT"
 # anvil/hardhat account 0: funded by genesis and the Authority owner on both chains.
 PK=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 ME=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+HUB_RELAYER_PK=0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
+SPOKE_RELAYER_PK=0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a
 # Fresh accounts with no genesis balance, so balances are exactly what the bridge moved.
 # Bob receives on the spoke and sends back from the minted BRL (paying gas with it too).
 BOB_PK=0x$(printf 'bankd-bridge-e2e-bob' | shasum -a 256 | cut -c1-64)
 BOB=$(cast wallet address "$BOB_PK")
 CAROL=0x000000000000000000000000000000000000CA70
+DAVE=0x000000000000000000000000000000000000DA7E
 NATIVE=0x0000000000000000000000000000004552433230
 
 log() { echo "==> $*"; }
@@ -45,6 +51,17 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+start_relayer() { # appends to $WORK/relayer.log so restarts keep the history
+  log "starting relayer (log $WORK/relayer.log)"
+  A_KEY=$HUB_RELAYER_PK B_KEY=$SPOKE_RELAYER_PK \
+    A_NAME=hub A_WS="ws://127.0.0.1:$HUB_PORT" A_ROUTER="$HUB_ROUTER" A_CLIENT_ID=client-0 A_EPOCH_LENGTH="$EPOCH_LENGTH" \
+    B_NAME=spoke B_WS="ws://127.0.0.1:$SPOKE_PORT" B_ROUTER="$SPOKE_ROUTER" B_CLIENT_ID=client-0 B_EPOCH_LENGTH="$EPOCH_LENGTH" \
+    "$RELAYER_BIN" >>"$WORK/relayer.log" 2>&1 &
+  RELAYER_PID=$!
+  sleep 2
+  kill -0 "$RELAYER_PID" 2>/dev/null || { cat "$WORK/relayer.log"; fail "relayer died"; }
+}
 
 send() { # rpc, then cast send args
   local rpc=$1; shift
@@ -62,7 +79,7 @@ create() { # rpc, contract, constructor args...
     | jq -r .deployedTo
 }
 
-# Deploys AccessManager + ICS26Router proxy + adapter. Prints "router adapter".
+# Deploys AccessManager + ICS26Router proxy + adapter. Prints "router adapter accessmanager".
 deploy_core() { # rpc, mode (0 hub, 1 spoke)
   local rpc=$1 mode=$2 am logic router adapter
   am="$(create "$rpc" lib/openzeppelin-contracts/contracts/access/manager/AccessManager.sol:AccessManager "$ME")"
@@ -71,7 +88,16 @@ deploy_core() { # rpc, mode (0 hub, 1 spoke)
     "$logic" "$(cast calldata 'initialize(address)' "$am")")"
   adapter="$(create "$rpc" src/ics20/ICS20NativeAdapter.sol:ICS20NativeAdapter "$router" "$mode" "$ME")"
   send "$rpc" "$router" 'addIBCApp(string,address)' transfer "$adapter" >/dev/null
-  echo "$router $adapter"
+  echo "$router $adapter $am"
+}
+
+# Lets `relayer` call recvPacket, timeoutPacket, ackPacket and updateClient (IBCRolesLib.RELAYER_ROLE).
+grant_relayer() { # rpc, access manager, router, relayer
+  local rpc=$1 am=$2 router=$3 relayer=$4
+  send "$rpc" "$am" 'setTargetFunctionRole(address,bytes4[],uint64)' "$router" \
+    '[0x5ebd10ca,0xb98c330a,0x1bca011a,0x6fbf8079]' 1 >/dev/null
+  send "$rpc" "$am" 'grantRole(uint64,address,uint32)' 1 "$relayer" 0 >/dev/null
+  [[ "$(cast balance --rpc-url "$rpc" "$relayer")" != 0 ]] || fail "relayer $relayer has no gas on $rpc"
 }
 
 # Deploys a CommonwareLightClient on `rpc` tracking the chain at `other_rpc`, registers it as client-0.
@@ -86,6 +112,7 @@ deploy_client() { # rpc, other_rpc, other_router
 
 main() {
   mkdir -p "$WORK"
+  : >"$WORK/relayer.log"
   log "building contracts + relayer"
   (cd "$C" && forge build -q)
   (cd "$ROOT/relayer" && cargo +1.97.1 build -q --bin bankd-relayer)
@@ -102,8 +129,8 @@ main() {
   "$LOCALNET" up "$SPOKE_ID" "$SPOKE_PORT" "$SPOKE_CONS" 1 "$EPOCH_LENGTH"
 
   log "deploying router + adapter"
-  read -r HUB_ROUTER HUB_ADAPTER <<<"$(deploy_core "$HUB" 0)"
-  read -r SPOKE_ROUTER SPOKE_ADAPTER <<<"$(deploy_core "$SPOKE" 1)"
+  read -r HUB_ROUTER HUB_ADAPTER HUB_AM <<<"$(deploy_core "$HUB" 0)"
+  read -r SPOKE_ROUTER SPOKE_ADAPTER SPOKE_AM <<<"$(deploy_core "$SPOKE" 1)"
   echo "hub   router=$HUB_ROUTER adapter=$HUB_ADAPTER"
   echo "spoke router=$SPOKE_ROUTER adapter=$SPOKE_ADAPTER"
 
@@ -120,6 +147,10 @@ main() {
   [[ "$(cast call --rpc-url "$SPOKE" "$NATIVE" 'isMinter(address)(bool)' "$SPOKE_ADAPTER")" == true ]] \
     || fail "adapter is not a minter"
 
+  log "granting RELAYER_ROLE to the relayer key on each chain"
+  grant_relayer "$HUB" "$HUB_AM" "$HUB_ROUTER" "$(cast wallet address "$HUB_RELAYER_PK")"
+  grant_relayer "$SPOKE" "$SPOKE_AM" "$SPOKE_ROUTER" "$(cast wallet address "$SPOKE_RELAYER_PK")"
+
   cat >"$WORK/addrs.env" <<EOF
 HUB_ROUTER=$HUB_ROUTER
 HUB_ADAPTER=$HUB_ADAPTER
@@ -129,14 +160,7 @@ SPOKE_ADAPTER=$SPOKE_ADAPTER
 SPOKE_LC=$SPOKE_LC
 EOF
 
-  log "starting relayer (log $WORK/relayer.log)"
-  RELAYER_KEY=$PK \
-    A_NAME=hub A_WS="ws://127.0.0.1:$HUB_PORT" A_ROUTER="$HUB_ROUTER" A_CLIENT_ID=client-0 A_EPOCH_LENGTH="$EPOCH_LENGTH" \
-    B_NAME=spoke B_WS="ws://127.0.0.1:$SPOKE_PORT" B_ROUTER="$SPOKE_ROUTER" B_CLIENT_ID=client-0 B_EPOCH_LENGTH="$EPOCH_LENGTH" \
-    "$RELAYER_BIN" >"$WORK/relayer.log" 2>&1 &
-  RELAYER_PID=$!
-  sleep 2
-  kill -0 "$RELAYER_PID" 2>/dev/null || { cat "$WORK/relayer.log"; fail "relayer died"; }
+  start_relayer
 
   wait_for() { # description, command...
     local what=$1; shift
@@ -174,6 +198,14 @@ EOF
   log "ok: $CAROL got 2 BRL on the hub, escrow 5 -> 3"
   wait_for "ack on spoke" no_commitment "$SPOKE" "$SPOKE_ROUTER" "$(path 1)"
   log "ok: ack relayed back to the spoke"
+
+  log "restart: stop the relayer, hub sends 1 BRL to $DAVE while it's down, then start it again"
+  kill "$RELAYER_PID"; wait "$RELAYER_PID" 2>/dev/null || true
+  send "$HUB" "$HUB_ADAPTER" 'sendTransfer(string,string,uint64,string)' client-0 "$DAVE" "$timeout" "" --value 1ether >/dev/null
+  start_relayer
+  wait_for "spoke mint after restart" bal_is "$SPOKE" "$DAVE" 1000000000000000000
+  wait_for "ack on hub after restart" no_commitment "$HUB" "$HUB_ROUTER" "$(path 2)"
+  log "ok: relayer caught up on the packet sent while it was down"
 
   log "relayer log:"
   cat "$WORK/relayer.log"

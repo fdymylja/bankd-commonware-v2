@@ -83,6 +83,16 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
     /// Looks up a full block by its digest in the execution layer's stores.
     fn block_by_digest(&self, digest: Digest) -> eyre::Result<Option<Block>>;
 
+    /// Runs node work that must wait for finality. bankd persists the block's shieldd
+    /// state here; candidates that never finalize are dropped by it.
+    fn on_finalized(
+        &self,
+        _block_hash: B256,
+        _height: u64,
+    ) -> impl Future<Output = eyre::Result<()>> + Send + 'static {
+        async { Ok(()) }
+    }
+
     /// Submits a block to the execution layer via a new-payload request.
     fn new_payload(
         &self,
@@ -172,6 +182,25 @@ impl ExecutionLayer for Arc<TempoFullNode> {
             .provider
             .find_sealed_or_recovered_block(digest.0, BlockSource::Any)?
             .map(|block| Block::from_execution_block_unchecked(block, None)))
+    }
+
+    fn on_finalized(
+        &self,
+        block_hash: B256,
+        height: u64,
+    ) -> impl Future<Output = eyre::Result<()>> + Send + 'static {
+        let node = self.clone();
+        async move {
+            let Some(shield) = node.evm_config.shield.clone() else {
+                return Ok(());
+            };
+            // Shieldd commits block on its own runtime, keep that off the async workers.
+            tokio::task::spawn_blocking(move || {
+                tempo_node::shield::finalize_block(&node.provider, &shield, block_hash, height)
+            })
+            .await
+            .wrap_err("shieldd finalize task panicked")?
+        }
     }
 
     fn new_payload(

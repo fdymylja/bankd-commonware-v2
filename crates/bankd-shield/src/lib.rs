@@ -8,9 +8,7 @@ mod executor;
 mod records;
 pub mod system;
 
-pub use executor::{
-    BlockId, BlockMode, ShieldDeposit, ShieldError, ShieldExecutor, ShieldFee, TxOutcome,
-};
+pub use executor::{BlockMode, ShieldDeposit, ShieldError, ShieldExecutor, ShieldFee, TxOutcome};
 pub use shieldd_sdk_app::{
     app::HostWithdrawal,
     genesis::{AppState, Content},
