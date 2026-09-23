@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, U256, address};
 use reth_evm::EvmInternals;
 use revm::{
     Database,
@@ -34,9 +34,7 @@ use revm::{
     precompile::PrecompileError,
 };
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
-use tempo_contracts::precompiles::{
-    IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
-};
+use tempo_contracts::precompiles::IAccountKeychain::SignatureType as PrecompileSignatureType;
 use tempo_precompiles::{
     ECRECOVER_GAS,
     account_keychain::{
@@ -49,23 +47,32 @@ use tempo_precompiles::{
         Handler as _, PrecompileStorageProvider, StorageActions, StorageCtx,
         evm::EvmPrecompileStorageProvider,
     },
-    tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
+    tip20::TIP20Token,
     tip20_channel_reserve::TIP20ChannelReserve,
 };
-use tempo_primitives::{
-    TempoAddressExt,
-    transaction::{
-        SignatureType, TEMPO_EXPIRING_NONCE_KEY, calc_gas_balance_spending, validate_calls,
-    },
-};
+use tempo_primitives::transaction::{SignatureType, TEMPO_EXPIRING_NONCE_KEY, validate_calls};
 
 use crate::{
-    ProtocolFeeContext, TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction,
+    TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction,
     error::FeePaymentError,
     evm::TempoContext,
     gas_credits,
     signature_gas::{primitive_signature_verification_gas, tempo_signature_verification_gas},
 };
+
+/// bankd: account that receives every tx fee (base fee + tip) in native BRL.
+pub const FEE_ESCROW_ADDRESS: Address = address!("0x0000000000000000000000000000000000FEE000");
+
+/// bankd: placeholder fee token recorded for txs, since gas is paid in native BRL.
+pub const NATIVE_FEE_TOKEN: Address = Address::ZERO;
+
+/// Native BRL spent on gas (base fee + tip), capped at what was collected up front.
+fn native_fee_spending<DB: alloy_evm::Database, I>(evm: &TempoEvm<DB, I>, gas: &Gas) -> U256 {
+    let basefee = u128::from(evm.inner.ctx.block.basefee());
+    let effective_gas_price = evm.inner.ctx.tx.effective_gas_price(basefee);
+    let used = gas.used().saturating_sub(gas.reservoir());
+    (U256::from(used) * U256::from(effective_gas_price)).min(evm.collected_fee)
+}
 
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
 const KEY_AUTH_BASE_GAS: u64 = 27_000;
@@ -986,33 +993,18 @@ where
         self.seed_precompile_tx_context(evm)?;
 
         let actions = evm.actions.clone();
-        let fee_manager = evm.fee_manager.clone();
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
         let journal = &mut evm.inner.ctx.journaled_state;
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-        let fee_token = fee_manager
-            .get_fee_token(journal, tx, fee_payer, cfg.spec, actions.clone())
-            .map_err(|err| EVMError::Custom(err.to_string()))?;
-
+        // bankd: gas is paid in native BRL, so there is no fee token to resolve.
+        let fee_token = NATIVE_FEE_TOKEN;
         evm.fee_token = Some(fee_token);
 
-        // Always validate TIP20 prefix to prevent panics in get_token_balance.
-        // This is a protocol-level check since validators could bypass initial validation.
-        if !fee_token.is_tip20() {
-            return Err(TempoInvalidTransaction::FeeTokenNotTip20 { address: fee_token }.into());
-        }
-
-        // Skip fee token validation when the transaction is free.
-        // The TIP20 prefix is already validated above.
-        if !tx.max_balance_spending()?.is_zero() {
-            fee_manager.validate_fee_token(journal, fee_token, cfg.spec, actions.clone())?;
-        }
-
-        // Load the fee payer balance
-        let account_balance = get_token_balance(journal, fee_token, fee_payer)?;
+        // Load the fee payer's native balance
+        let account_balance = journal.load_account(fee_payer)?.data.info.balance;
 
         // Load caller's account
         let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
@@ -1242,8 +1234,6 @@ where
         // already exists. Same-tx auth+use is the exception: that key is registered only after fees
         // are collected, so fee-limit validation uses the inline authorization payload instead.
         let mut loaded_tx_access_key = None;
-        // Access key whose fee-token spending limit was debited during fee collection, if any.
-        let mut keychain_fee_key = None;
         let mut same_tx_key_authorization_use = false;
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(keychain_sig) = tempo_tx_env.signature.as_keychain()
@@ -1298,8 +1288,6 @@ where
                             FeePaymentError::Other("SpendingLimitExceeded".to_string()).into()
                         );
                     }
-
-                    keychain_fee_key = Some(key_auth.key_id);
                 }
             } else {
                 // Existing-key path:
@@ -1355,7 +1343,6 @@ where
                 )?;
 
                 evm.key_expiry = Some(loaded_key.key.expiry);
-                keychain_fee_key = loaded_key.key.enforce_limits.then_some(loaded_key.key_id);
                 loaded_tx_access_key = Some(loaded_key);
             }
         }
@@ -1399,86 +1386,12 @@ where
             }
         }
 
-        // Collect fees for the transaction.
+        // bankd: collect the max fee from the fee payer's native balance. Unused gas is
+        // refunded in `reimburse_caller`, the rest goes to escrow in `reward_beneficiary`.
         if !gas_balance_spending.is_zero() {
-            let checkpoint = journal.checkpoint();
-
-            let skip_liquidity_check = evm.skip_liquidity_check;
-            let result = fee_manager.collect_fee_pre_tx(
-                ProtocolFeeContext {
-                    journal,
-                    block_env: block,
-                    cfg,
-                    tx_env: tx,
-                    actions: actions.clone(),
-                },
-                fee_payer,
-                fee_token,
-                gas_balance_spending,
-                block.beneficiary(),
-                skip_liquidity_check,
-            );
-
-            if let Err(err) = result {
-                // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
-                journal.checkpoint_revert(checkpoint);
-
-                // Map fee collection errors to transaction validation errors since they
-                // indicate the transaction cannot be included (e.g., insufficient liquidity
-                // in FeeAMM pool for fee swaps)
-                return Err(match err {
-                    TempoPrecompileError::TIPFeeAMMError(
-                        TIPFeeAMMError::InsufficientLiquidity(_),
-                    ) => {
-                        let validator_token = fee_manager
-                            .get_validator_token(
-                                journal,
-                                block.beneficiary(),
-                                cfg.spec,
-                                StorageActions::disabled(),
-                            )
-                            .ok();
-
-                        FeePaymentError::InsufficientAmmLiquidity {
-                            user_token: validator_token.map(|_| fee_token),
-                            validator_token,
-                            fee: gas_balance_spending,
-                        }
-                        .into()
-                    }
-
-                    TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(
-                        InsufficientBalance { available, .. },
-                    )) => FeePaymentError::InsufficientFeeTokenBalance {
-                        fee: gas_balance_spending,
-                        balance: available,
-                    }
-                    .into(),
-
-                    TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)) => {
-                        TempoInvalidTransaction::FeeTokenPaused { address: fee_token }.into()
-                    }
-
-                    TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
-
-                    _ => FeePaymentError::Other(err.to_string()).into(),
-                });
-            }
-
-            if cfg.spec.is_t7() {
-                let keychain_fee_key = if fee_payer == tx.caller {
-                    keychain_fee_key
-                } else {
-                    None
-                };
-                evm.non_creditable_slots.borrow_mut().initialize(
-                    fee_payer,
-                    fee_token,
-                    keychain_fee_key,
-                );
-            }
-
-            journal.checkpoint_commit();
+            journal
+                .load_account_mut(fee_payer)?
+                .set_balance(account_balance - gas_balance_spending);
             evm.collected_fee = gas_balance_spending;
         }
 
@@ -1681,78 +1594,46 @@ where
         evm: &mut Self::Evm,
         exec_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
-        let actions = evm.actions.clone();
-        let fee_manager = evm.fee_manager.clone();
-        let context = &mut evm.inner.ctx;
-        let tx = context.tx();
-        let basefee = u128::from(context.block().basefee());
-        let effective_gas_price = tx.effective_gas_price(basefee);
-        let gas = exec_result.gas();
-
-        let actual_spending = calc_gas_balance_spending(
-            gas.used().saturating_sub(gas.reservoir()),
-            effective_gas_price,
-        );
-        let refund_amount = tx.effective_balance_spending(
-            context.block.basefee.into(),
-            context.block.blob_gasprice().unwrap_or_default(),
-        )? - tx.value
-            - actual_spending;
-
-        // Skip `collectFeePostTx` call if the initial fee collected in
-        // `collectFeePreTx` was zero, but spending is non-zero.
-        //
-        // This is normally unreachable unless the gas price was increased mid-transaction,
-        // which is only possible when there are some EVM customizations involved (e.g Foundry EVM).
-        if context.cfg.disable_fee_charge
-            && evm.collected_fee.is_zero()
-            && !actual_spending.is_zero()
-        {
+        // bankd: nothing was collected up front (free tx or fee charge disabled), so there is
+        // nothing to refund.
+        if evm.collected_fee.is_zero() {
             return Ok(());
         }
 
-        let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
-        let beneficiary = context.block.beneficiary();
-
-        let credited = if !actual_spending.is_zero() || !refund_amount.is_zero() {
-            let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-            let fee_token = evm
-                .fee_token
-                .expect("set in `validate_against_state_and_deduct_caller`");
-            fee_manager
-                .collect_fee_post_tx(
-                    ProtocolFeeContext {
-                        journal,
-                        block_env: block,
-                        cfg: &context.cfg,
-                        tx_env: tx,
-                        actions,
-                    },
-                    fee_payer,
-                    actual_spending,
-                    refund_amount,
-                    fee_token,
-                    beneficiary,
-                )
-                .map_err(|e| EVMError::Custom(format!("{e:?}")))?
-        } else {
-            U256::ZERO
-        };
-
-        // Stash the per-tx credit so `TempoBlockExecutor` can surface it on `TempoTxResult`
-        // for payload scoring. Reset to zero on every tx entry below in `validate_env`.
-        evm.validator_fee = credited;
+        let actual_spending = native_fee_spending(evm, exec_result.gas());
+        let refund_amount = evm.collected_fee.saturating_sub(actual_spending);
+        let context = &mut evm.inner.ctx;
+        let fee_payer = context
+            .tx
+            .fee_payer()
+            .expect("pre-validated in `validate_env`");
+        context
+            .journaled_state
+            .load_account_mut(fee_payer)?
+            .incr_balance(refund_amount);
         Ok(())
     }
 
     #[inline]
     fn reward_beneficiary(
         &self,
-        _evm: &mut Self::Evm,
-        _exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
+        evm: &mut Self::Evm,
+        exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
     ) -> Result<(), Self::Error> {
-        // Fee handling (refunds and swaps) are done in `reimburse_caller()` via `collectFeePostTx`.
-        // Validators call distributeFees() to claim their accumulated fees.
+        if evm.collected_fee.is_zero() {
+            return Ok(());
+        }
+
+        // bankd: base fee and tip both go to the fee escrow instead of the block beneficiary.
+        let fee = native_fee_spending(evm, exec_result.gas());
+        evm.inner
+            .ctx
+            .journaled_state
+            .load_account_mut(FEE_ESCROW_ADDRESS)?
+            .incr_balance(fee);
+
+        // Surfaced on `TempoTxResult` for payload scoring. Reset per tx in `validate_env`.
+        evm.validator_fee = fee;
         Ok(())
     }
 
@@ -1776,12 +1657,6 @@ where
             && fee_payer == evm.ctx.tx.caller()
         {
             return Err(TempoInvalidTransaction::SelfSponsoredFeePayer.into());
-        }
-
-        // All accounts have zero balance so transfer of value is not possible.
-        // Check added in https://github.com/tempoxyz/tempo/pull/759
-        if !evm.ctx.tx.value().is_zero() {
-            return Err(TempoInvalidTransaction::ValueTransferNotAllowed.into());
         }
 
         // First perform standard validation (header + transaction environment).
@@ -2307,12 +2182,6 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
 
             // TIP-1016: Track predictable state gas for CREATE calls
             gas.initial_state_gas += gas_params.create_state_gas();
-        }
-
-        // Note: Transaction value is not allowed in AA transactions as there is no balances in accounts yet.
-        // Check added in https://github.com/tempoxyz/tempo/pull/759
-        if !call.value.is_zero() {
-            return Err(TempoInvalidTransaction::ValueTransferNotAllowedInAATx);
         }
 
         // 4c. Value transfer cost using revm constant

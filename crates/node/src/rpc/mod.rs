@@ -22,8 +22,8 @@ pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Respons
 use std::{marker::PhantomData, sync::Arc};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
-use tempo_evm::{FeeTokenResolver, TempoStateAccess};
-use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, storage::StorageActions};
+use tempo_evm::FeeTokenResolver;
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
 use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
 pub use token::{TempoToken, TempoTokenApiServer};
 
@@ -67,9 +67,7 @@ use reth_rpc_eth_types::{
 };
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::{TempoBlockEnv, TempoInvalidTransaction};
-use tempo_primitives::{
-    TEMPO_GAS_PRICE_SCALING_FACTOR, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
-};
+use tempo_primitives::{TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
 use tempo_revm::TempoTxEnv;
 use tempo_transaction_pool::TempoTransactionPoolExt;
 use tokio::sync::Mutex;
@@ -342,14 +340,7 @@ impl<N> EthState for TempoEthApi<N>
 where
     N: TempoEthApiBounds,
 {
-    #[inline]
-    async fn balance(
-        &self,
-        _address: alloy_primitives::Address,
-        _block_id: Option<alloy_eips::BlockId>,
-    ) -> Result<U256, Self::Error> {
-        Ok(NATIVE_BALANCE_PLACEHOLDER)
-    }
+    // bankd: `eth_getBalance` uses reth's default, since native BRL balances are real.
 
     #[inline]
     fn max_proof_window(&self) -> u64 {
@@ -393,31 +384,22 @@ where
     fn caller_gas_allowance(
         &self,
         mut db: impl Database<Error: Into<EthApiError>>,
-        evm_env: &EvmEnvFor<Self::Evm>,
+        _evm_env: &EvmEnvFor<Self::Evm>,
         tx_env: &TxEnvFor<Self::Evm>,
     ) -> Result<u64, Self::Error> {
         let fee_payer = tx_env
             .fee_payer()
             .map_err(EVMError::<ProviderError, _>::from)?;
 
-        let actions = StorageActions::disabled();
-        let fee_token = self
-            .evm_config()
-            .resolve_fee_token(
-                &mut db,
-                tx_env,
-                fee_payer,
-                evm_env.cfg_env.spec,
-                actions.clone(),
-            )
-            .map_err(ProviderError::other)?;
-        let fee_token_balance = db
-            .get_token_balance(fee_token, fee_payer, evm_env.cfg_env.spec, actions)
-            .map_err(ProviderError::other)?;
+        // bankd: gas is paid in native BRL (wei), so no fee token or scaling is involved.
+        let balance = db
+            .basic(fee_payer)
+            .map_err(Into::into)?
+            .map(|acc| acc.balance)
+            .unwrap_or_default();
 
-        Ok(fee_token_balance
-            // multiply by the scaling factor
-            .saturating_mul(TEMPO_GAS_PRICE_SCALING_FACTOR)
+        Ok(balance
+            .saturating_sub(tx_env.inner.value)
             // Calculate the amount of gas the caller can afford with the specified gas price.
             .checked_div(U256::from(tx_env.inner.gas_price))
             // This will be 0 if gas price is 0. It is fine, because we check it before.

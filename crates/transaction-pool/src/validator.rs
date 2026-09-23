@@ -146,7 +146,8 @@ where
             aa_valid_after_max_secs,
             max_tempo_authorizations,
             amm_liquidity_cache,
-            disable_fee_amm_check: false,
+            // bankd: gas is native BRL, the FeeAMM isn't on the fee path.
+            disable_fee_amm_check: true,
             address_filter: AddressFilter::default(),
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
@@ -1020,9 +1021,13 @@ mod tests {
     ) -> TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
         let provider = MockEthProvider::<TempoPrimitives>::new()
             .with_chain_spec(Arc::unwrap_or_clone(MODERATO.clone()));
+        // bankd: gas is native BRL, so the sender needs a native balance.
         provider.add_account(
             transaction.sender(),
-            ExtendedAccount::new(transaction.nonce(), alloy_primitives::U256::ZERO),
+            ExtendedAccount::new(
+                transaction.nonce(),
+                alloy_primitives::U256::from(10).pow(alloy_primitives::U256::from(24)),
+            ),
         );
         let block_with_gas = Block {
             header: TempoHeader {
@@ -1260,17 +1265,11 @@ mod tests {
             .validate_transaction(TransactionOrigin::External, transaction.clone())
             .await;
 
-        match outcome {
-            TransactionValidationOutcome::Invalid(_, ref err) => {
-                assert!(matches!(
-                    err.downcast_other_ref::<TempoPoolTransactionError>(),
-                    Some(TempoPoolTransactionError::Evm(
-                        TempoInvalidTransaction::ValueTransferNotAllowed
-                    ))
-                ));
-            }
-            _ => panic!("Expected Invalid outcome with Evm error, got: {outcome:?}"),
-        }
+        // bankd: native BRL value transfers are allowed.
+        assert!(
+            matches!(outcome, TransactionValidationOutcome::Valid { .. }),
+            "Expected Valid outcome for a value transfer, got: {outcome:?}"
+        );
     }
 
     #[tokio::test]
@@ -2018,7 +2017,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_non_zero_value_in_eip1559_rejected() {
+    async fn test_non_zero_value_in_eip1559_accepted() {
         let transaction = TxBuilder::eip1559(Address::random())
             .value(U256::from(1))
             .build_eip1559();
@@ -2033,17 +2032,11 @@ mod tests {
             .validate_transaction(TransactionOrigin::External, transaction)
             .await;
 
-        match outcome {
-            TransactionValidationOutcome::Invalid(_, ref err) => {
-                assert!(matches!(
-                    err.downcast_other_ref::<TempoPoolTransactionError>(),
-                    Some(TempoPoolTransactionError::Evm(
-                        TempoInvalidTransaction::ValueTransferNotAllowed
-                    ))
-                ));
-            }
-            _ => panic!("Expected Invalid outcome with Evm error, got: {outcome:?}"),
-        }
+        // bankd: native BRL value transfers are allowed.
+        assert!(
+            matches!(outcome, TransactionValidationOutcome::Valid { .. }),
+            "Expected Valid outcome for a value transfer, got: {outcome:?}"
+        );
     }
 
     #[tokio::test]
@@ -2069,6 +2062,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "bankd: fee_token is unused, gas is native BRL"]
     async fn test_invalid_fee_token_rejected() {
         let invalid_fee_token = address!("1234567890123456789012345678901234567890");
 

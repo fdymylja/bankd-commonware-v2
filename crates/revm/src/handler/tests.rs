@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
-    FeeTokenResolver, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv,
-    evm::TempoEvm, gas_params::tempo_gas_params, signature_gas::P256_VERIFY_GAS,
+    FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager,
+    TempoTxEnv, evm::TempoEvm, gas_params::tempo_gas_params, signature_gas::P256_VERIFY_GAS,
     tx::TempoBatchCallEnv,
 };
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
@@ -19,14 +19,15 @@ use revm::{
     primitives::hardfork::SpecId,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIPFeeAMM};
+use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIPFeeAMM, TIPFeeAMMError};
 use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, storage::ContractStorage, test_util::TIP20Setup,
     tip_fee_manager::TipFeeManager,
 };
+use tempo_primitives::TempoAddressExt;
 use tempo_primitives::transaction::{
     Call, PrimitiveSignature, RecoveredTempoAuthorization, TempoSignature,
-    TempoSignedAuthorization,
+    TempoSignedAuthorization, calc_gas_balance_spending,
     tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
 };
 
@@ -191,6 +192,7 @@ impl<DB: Database> ProtocolFeeManager<DB> for ValidatorTokenLookupFailsFeeManage
 }
 
 #[test]
+#[ignore = "bankd: asserts TIP-20 fee payment, gas is native BRL now"]
 fn test_invalid_fee_token_rejected() {
     // Test that an invalid fee token (non-TIP20 address) is rejected with a typed error
     // rather than panicking. This validates the check in validate_against_state_and_deduct_caller that
@@ -217,6 +219,7 @@ fn test_invalid_fee_token_rejected() {
 }
 
 #[test]
+#[ignore = "bankd: asserts TIP-20 fee payment, gas is native BRL now"]
 fn test_non_usd_fee_token_rejected() {
     let admin = Address::random();
     let mut test = TestHandlerEvm::tx(TempoHardfork::default(), |tx_env| {
@@ -251,6 +254,7 @@ fn test_non_usd_fee_token_rejected() {
 }
 
 #[test]
+#[ignore = "bankd: asserts TIP-20 fee payment, gas is native BRL now"]
 fn test_paused_fee_token_rejected() {
     let admin = Address::random();
     let fee_payer = Address::random();
@@ -288,6 +292,7 @@ fn test_paused_fee_token_rejected() {
 }
 
 #[test]
+#[ignore = "bankd: asserts TIP-20 fee payment, gas is native BRL now"]
 fn test_collect_fee_pre_tx_insufficient_liquidity_reports_pair_from_handler() -> eyre::Result<()> {
     use tempo_contracts::precompiles::IFeeManager;
 
@@ -350,6 +355,7 @@ fn test_collect_fee_pre_tx_insufficient_liquidity_reports_pair_from_handler() ->
 }
 
 #[test]
+#[ignore = "bankd: asserts TIP-20 fee payment, gas is native BRL now"]
 fn test_collect_fee_pre_tx_insufficient_liquidity_falls_back_when_pair_lookup_fails()
 -> eyre::Result<()> {
     let admin = Address::random();
@@ -801,9 +807,19 @@ fn test_aa_gas_value_transfer() {
         tempo_chainspec::hardfork::TempoHardfork::default(),
     );
 
+    // bankd: native BRL value is allowed in AA calls and pays the usual value transfer cost.
+    let mut zero_value_env = aa_env.clone();
+    zero_value_env.aa_calls[0].value = U256::ZERO;
+    let zero_value = calculate_aa_batch_intrinsic_gas(
+        &zero_value_env,
+        &GasParams::default(),
+        None::<std::iter::Empty<&AccessListItem>>,
+        tempo_chainspec::hardfork::TempoHardfork::default(),
+    )
+    .unwrap();
     assert_eq!(
-        res.unwrap_err(),
-        TempoInvalidTransaction::ValueTransferNotAllowedInAATx
+        res.unwrap().initial_regular_gas,
+        zero_value.initial_regular_gas + GasParams::default().get(GasId::transfer_value_cost())
     );
 }
 
@@ -943,34 +959,32 @@ fn test_aa_gas_floor_gas_prague() {
     );
 }
 
-/// This test will start failing once we get the balance transfer enabled
-/// PR that introduced [`TempoInvalidTransaction::ValueTransferNotAllowed`] https://github.com/tempoxyz/tempo/pull/759
+/// bankd: native BRL value transfers are allowed, upstream rejected them in
+/// https://github.com/tempoxyz/tempo/pull/759
 #[test]
-fn test_zero_value_transfer() -> eyre::Result<()> {
+fn test_value_transfer_allowed() -> eyre::Result<()> {
     use crate::TempoEvm;
 
-    // Create a test context with a transaction that has a non-zero value
     let ctx = Context::mainnet()
         .with_db(CacheDB::new(EmptyDB::default()))
         .with_block(Default::default())
         .with_cfg(Default::default())
         .with_tx(TempoTxEnv::default());
     let mut evm = TempoEvm::new(ctx, ());
-
-    // Set a non-zero value on the transaction
     evm.ctx.tx.inner.value = U256::from(1000);
 
-    // Create the handler
     let handler = TempoEvmHandler::<_, ()>::new();
-
-    // Call validate_env and expect it to fail with ValueTransferNotAllowed
     let result = handler.validate_env(&mut evm);
 
-    if let Err(EVMError::Transaction(err)) = result {
-        assert_eq!(err, TempoInvalidTransaction::ValueTransferNotAllowed);
-    } else {
-        panic!("Expected ValueTransferNotAllowed error");
-    }
+    assert!(
+        !matches!(
+            result,
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::ValueTransferNotAllowed
+            ))
+        ),
+        "value transfer should be allowed, got {result:?}"
+    );
 
     Ok(())
 }
@@ -3363,6 +3377,7 @@ mod keychain {
     }
 
     #[test]
+    #[ignore = "bankd: asserts TIP-20 fee payment, gas is native BRL now"]
     fn test_t6_admin_delegation_does_not_apply_child_fee_limit() {
         let (admin_signer, admin_key) = generate_keypair();
         let user = Address::random();
@@ -3603,6 +3618,7 @@ mod keychain {
     }
 
     #[test]
+    #[ignore = "bankd: asserts TIP-20 fee payment, gas is native BRL now"]
     fn test_same_tx_key_authorization_rejects_fee_above_new_limit_before_auth() {
         let (signer, user) = generate_keypair();
         let key = Address::random();

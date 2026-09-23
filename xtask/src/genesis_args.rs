@@ -89,6 +89,10 @@ pub(crate) struct GenesisArgs {
     #[arg(long, short, default_value = "1337")]
     chain_id: u64,
 
+    /// bankd: native BRL (wei, 18 decimals) given to each generated account. Defaults to 1M BRL.
+    #[arg(long, default_value = "1000000000000000000000000")]
+    native_balance: U256,
+
     /// Genesis block gas limit
     #[arg(long, default_value_t = 500_000_000)]
     gas_limit: u64,
@@ -572,6 +576,11 @@ impl GenesisArgs {
         );
 
         insert_zone_state_at_genesis(self.t10_time, self.t13_time, &mut genesis_alloc);
+
+        // bankd: gas is native BRL, so fund the generated accounts with it.
+        for address in &addresses {
+            genesis_alloc.entry(*address).or_default().balance = self.native_balance;
+        }
 
         genesis_alloc.insert(
             HISTORY_STORAGE_ADDRESS,

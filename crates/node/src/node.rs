@@ -737,7 +737,8 @@ impl Default for TempoPoolBuilder {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
-            disable_fee_amm_check: false,
+            // bankd: gas is native BRL, the FeeAMM isn't on the fee path.
+            disable_fee_amm_check: true,
             address_filter: AddressFilter::default(),
             additional_stateless_validation: None,
             additional_stateful_validation: None,

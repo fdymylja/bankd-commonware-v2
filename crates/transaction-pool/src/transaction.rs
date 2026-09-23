@@ -436,6 +436,11 @@ impl TempoPooledTransaction {
                 .resolved_fee_token()
                 .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
             let fee_payer = self.fee_payer().ok()?;
+            // bankd: native BRL gas has no TIP-20 balance slot, and no TIP-20 balance update
+            // ever keys on the native placeholder token, so any slot works here.
+            if !tempo_primitives::TempoAddressExt::is_tip20(&fee_token) {
+                return Some((fee_token, U256::from_be_slice(fee_payer.as_slice())));
+            }
             let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
             Some((fee_token, slot))
         })
