@@ -1,4 +1,4 @@
-//! bankd precompile ABIs: Authority, Native, Compliance and BankSend.
+//! bankd precompile ABIs: Authority, Native, Compliance, BankSend and Shield.
 //!
 //! Addresses match bankd v1 (ASCII tag hex-encoded into the address) so Solidity callers and
 //! frontends keep their constants. Authority is new in v2.
@@ -15,6 +15,10 @@ pub const NATIVE_ADDRESS: Address = address!("0x00000000000000000000000000000045
 pub const COMPLIANCE_ADDRESS: Address = address!("0x000000000000000000000000000000434D504C59");
 /// BankSend ("BANKSEND"): native BRL send and atomic batch payroll.
 pub const BANK_SEND_ADDRESS: Address = address!("0x00000000000000000000000042414E4B53454E44");
+/// Shield ("SHLD"): EVM to shielded pool deposits. Its storage also holds the shieldd root.
+pub const SHIELD_ADDRESS: Address = address!("0x0000000000000000000000000000000053484C44");
+/// Shieldd denom for native BRL (18 decimals, atto-BRL).
+pub const SHIELD_BRL_DENOM: &str = "abrl";
 
 crate::sol! {
     /// Errors shared by every bankd precompile. Each interface below re-declares the ones it can
@@ -31,6 +35,9 @@ crate::sol! {
         error BridgeAlreadyRegistered();
         error AccountBlocked(address account);
         error InsufficientNativeBalance(address account, uint256 available, uint256 required);
+        error ZeroDeposit();
+        error EmptyRecipient();
+        error NotPayable();
     }
 }
 
@@ -136,5 +143,25 @@ crate::sol! {
 
         error AccountBlocked(address account);
         error InsufficientNativeBalance(address account, uint256 available, uint256 required);
+    }
+}
+
+crate::sol! {
+    /// Deposits native BRL into the shielded pool. The block executor forwards each
+    /// `ShielddDeposit` to shieldd after the tx succeeds, and refunds it if shieldd rejects it.
+    #[derive(Debug, PartialEq, Eq)]
+    #[sol(abi)]
+    interface IShield {
+        /// Escrows `msg.value` under this address and mints a shielded note to `recipient`.
+        function deposit(string calldata recipient) external payable returns (bool success);
+        /// Shieldd app hash and height written by the last block.
+        function getLastCommitment() external view returns (bytes32 root, uint64 height);
+
+        event ShielddDeposit(address indexed sender, string recipient, uint256 amount, string denom);
+
+        error ZeroDeposit();
+        error EmptyRecipient();
+        error NotPayable();
+        error AccountBlocked(address account);
     }
 }

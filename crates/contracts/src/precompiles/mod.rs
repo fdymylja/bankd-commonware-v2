@@ -88,4 +88,5 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (NATIVE_ADDRESS, TempoHardfork::Genesis),
     (COMPLIANCE_ADDRESS, TempoHardfork::Genesis),
     (BANK_SEND_ADDRESS, TempoHardfork::Genesis),
+    (SHIELD_ADDRESS, TempoHardfork::Genesis),
 ];

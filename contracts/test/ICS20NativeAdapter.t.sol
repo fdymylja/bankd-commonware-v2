@@ -200,6 +200,25 @@ contract ICS20NativeAdapterTest is Test {
         assertEq(bob.balance, 0);
     }
 
+    function test_RejectsForeignSourcePort() public {
+        _hubToSpoke(5 ether);
+        uint256 bobBefore = bob.balance;
+
+        // spoke: a packet from another port must not mint
+        IICS26RouterMsgs.Packet memory p = _packet(hubClient, spokeClient, 2, alice, bob, 1 ether);
+        p.payloads[0].sourcePort = Strings.toHexString(alice);
+        _recv(spoke, p);
+        assertEq(bob.balance, bobBefore);
+
+        // hub: nor release escrow
+        address carol = makeAddr("carol");
+        p = _packet(spokeClient, hubClient, 1, bob, carol, 1 ether);
+        p.payloads[0].sourcePort = Strings.toHexString(bob);
+        _recv(hub, p);
+        assertEq(carol.balance, 0);
+        assertEq(hub.adapter.escrowed(hubClient), 5 ether);
+    }
+
     function test_MissingPrecompileFailsClosed() public {
         vm.etch(NATIVE_PRECOMPILE, "");
         IICS26RouterMsgs.Packet memory p = _packet(hubClient, spokeClient, 1, alice, bob, 1 ether);

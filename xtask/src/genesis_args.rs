@@ -54,7 +54,7 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
-    bankd::{Authority, BankSend, Compliance, Native, native::INative},
+    bankd::{Authority, BankSend, Compliance, Native, Shield, native::INative},
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
@@ -1079,7 +1079,8 @@ fn initialize_bankd_modules(
                 )?;
             }
             Compliance::new().initialize()?;
-            BankSend::new().initialize()
+            BankSend::new().initialize()?;
+            Shield::new().initialize()
         },
     )?;
 

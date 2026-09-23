@@ -37,7 +37,7 @@ pub mod test_util;
 use crate::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
-    bankd::{Authority, BankSend, Compliance, Native},
+    bankd::{Authority, BankSend, Compliance, Native, Shield},
     current_committee::CurrentCommittee,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
@@ -72,6 +72,7 @@ use revm::{
 
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, AUTHORITY_ADDRESS, BANK_SEND_ADDRESS,
+    SHIELD_ADDRESS,
     COMPLIANCE_ADDRESS, CURRENT_COMMITTEE_ADDRESS, DEFAULT_FEE_TOKEN, NATIVE_ADDRESS,
     NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
     SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
@@ -269,6 +270,8 @@ pub fn extend_tempo_precompiles(
             Some(Compliance::create_precompile(&env))
         } else if *address == BANK_SEND_ADDRESS {
             Some(BankSend::create_precompile(&env))
+        } else if *address == SHIELD_ADDRESS {
+            Some(Shield::create_precompile(&env))
         } else {
             None
         }
@@ -435,6 +438,14 @@ impl BankSend {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("BankSend", env: env, |input| { Self::new() })
+    }
+}
+
+impl Shield {
+    /// Creates the EVM precompile for this type. It's the only bankd precompile that reads
+    /// `msg.value`, since `deposit` is payable.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("Shield", env: env, |input| { Self::new().with_value(input.value) })
     }
 }
 

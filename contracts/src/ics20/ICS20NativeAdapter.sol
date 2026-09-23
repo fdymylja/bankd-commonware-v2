@@ -48,6 +48,7 @@ contract ICS20NativeAdapter is IIBCApp, Ownable {
     error UntrustedClient(string clientId);
     error InvalidPayload();
     error InvalidDenom(string denom);
+    error InvalidPort(string sourcePort, string destPort);
     error InsufficientEscrow(string clientId, uint256 escrow, uint256 amount);
     error NativeCallFailed();
     error NativeTransferFailed(address to);
@@ -166,6 +167,12 @@ contract ICS20NativeAdapter is IIBCApp, Ownable {
         pure
         returns (IICS20TransferMsgs.FungibleTokenPacketData memory data)
     {
+        // Ports are permissionless on the router, so a packet from any other port could mint or release BRL.
+        require(
+            keccak256(bytes(payload.sourcePort)) == ICS20Lib.KECCAK256_DEFAULT_PORT_ID
+                && keccak256(bytes(payload.destPort)) == ICS20Lib.KECCAK256_DEFAULT_PORT_ID,
+            InvalidPort(payload.sourcePort, payload.destPort)
+        );
         require(
             keccak256(bytes(payload.version)) == ICS20Lib.KECCAK256_ICS20_VERSION
                 && keccak256(bytes(payload.encoding)) == ICS20Lib.KECCAK256_ICS20_ENCODING,

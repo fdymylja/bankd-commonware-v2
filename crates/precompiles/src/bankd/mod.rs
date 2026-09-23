@@ -1,4 +1,4 @@
-//! bankd precompiles: Authority, Native, Compliance and BankSend.
+//! bankd precompiles: Authority, Native, Compliance, BankSend and Shield.
 //!
 //! Kept in one module so upstream tempo rebases only touch a few registration lines.
 
@@ -6,11 +6,13 @@ pub mod authority;
 pub mod bank_send;
 pub mod compliance;
 pub mod native;
+pub mod shield;
 
 pub use authority::Authority;
 pub use bank_send::BankSend;
 pub use compliance::Compliance;
 pub use native::Native;
+pub use shield::Shield;
 
 use crate::error::{Result, TempoPrecompileError};
 use alloy::primitives::{Address, U256};
