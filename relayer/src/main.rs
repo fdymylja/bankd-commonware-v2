@@ -9,7 +9,11 @@
 //! 4. recvPacket on B
 //! 5. WriteAcknowledgement on B goes back to A the same way (ackPacket)
 //!
-//! Timeouts are not handled yet.
+//! On start each direction backfills logs from {A,B}_FROM_BLOCK before subscribing, and packets
+//! that were already received or acked are skipped, so a restart picks up where it left off.
+//! Errors retry with backoff from the failed event's block instead of stopping the relayer.
+//!
+//! Timeouts are not handled yet. Timed out packets are skipped.
 //!
 //! Usage:
 //!   bankd-relayer                       run, config from env (see `main`)
@@ -22,10 +26,11 @@ mod cert;
 use std::{sync::Arc, time::Duration};
 
 use alloy::{
+    eips::BlockNumberOrTag,
     network::EthereumWallet,
     primitives::{Address, B256, Bytes, keccak256},
     providers::{DynProvider, Provider, ProviderBuilder, WsConnect},
-    rpc::types::Filter,
+    rpc::types::{Filter, Log},
     signers::local::PrivateKeySigner,
     sol_types::{SolEvent, SolValue},
 };
@@ -44,6 +49,11 @@ use abi::{
 const IBCSTORE_SLOT: B256 =
     alloy::primitives::b256!("1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600");
 const POLL: Duration = Duration::from_millis(250);
+const BACKOFF_MIN: Duration = Duration::from_secs(1);
+const BACKOFF_MAX: Duration = Duration::from_secs(30);
+const RECEIPT_TIMEOUT: Duration = Duration::from_secs(60);
+/// Block range per eth_getLogs call when backfilling.
+const LOG_CHUNK: u64 = 5_000;
 
 #[derive(Clone)]
 struct Chain {
@@ -54,6 +64,8 @@ struct Chain {
     client_id: String,
     /// Epoch length of this chain, used when building updates for the other side.
     epoch_length: u64,
+    /// First block to scan for this chain's events on startup.
+    from_block: u64,
     /// One relayer key per chain, so txs from concurrent tasks are serialized to keep nonces sane.
     tx_lock: Arc<Mutex<()>>,
 }
@@ -71,10 +83,11 @@ struct CertifiedBlockInner {
 }
 
 impl Chain {
-    async fn connect(prefix: &str, signer: PrivateKeySigner) -> eyre::Result<Self> {
+    async fn connect(prefix: &str) -> eyre::Result<Self> {
         let var = |k: &str| {
             std::env::var(format!("{prefix}_{k}")).wrap_err_with(|| format!("{prefix}_{k}"))
         };
+        let signer: PrivateKeySigner = var("KEY")?.parse()?;
         let provider = ProviderBuilder::new()
             .wallet(EthereumWallet::from(signer))
             .connect_ws(WsConnect::new(var("WS")?))
@@ -86,6 +99,7 @@ impl Chain {
             router: var("ROUTER")?.parse()?,
             client_id: var("CLIENT_ID")?,
             epoch_length: var("EPOCH_LENGTH")?.parse()?,
+            from_block: var("FROM_BLOCK").map_or(Ok(0), |v| v.parse())?,
             tx_lock: Arc::default(),
         })
     }
@@ -179,6 +193,7 @@ async fn update_client(src: &Chain, dst: &Chain, height: u64) -> eyre::Result<()
             .updateClient(dst.client_id.clone(), msg)
             .send()
             .await?
+            .with_timeout(Some(RECEIPT_TIMEOUT))
             .get_receipt()
             .await?;
         eyre::ensure!(
@@ -195,90 +210,185 @@ fn commitment_path(client: &str, kind: u8, sequence: u64) -> Vec<u8> {
     [client.as_bytes(), &[kind], &sequence.to_be_bytes()].concat()
 }
 
-/// Relays SendPacket on `src` to recvPacket on `dst`.
-async fn relay_packets(src: Chain, dst: Chain) -> eyre::Result<()> {
-    let filter = Filter::new()
-        .address(src.router)
-        .event_signature(ICS26Router::SendPacket::SIGNATURE_HASH);
-    let mut logs = src.provider.subscribe_logs(&filter).await?.into_stream();
-    let dst_router = ICS26Router::new(dst.router, &dst.provider);
+/// Which events a relay task follows. Packets: SendPacket on src -> recvPacket on dst.
+/// Acks: WriteAcknowledgement on dst -> ackPacket on src.
+#[derive(Clone, Copy, Debug)]
+enum Kind {
+    Packets,
+    Acks,
+}
 
-    while let Some(log) = logs.next().await {
-        let packet: Packet = ICS26Router::SendPacket::decode_log_data(log.data())?.packet;
-        let seq = packet.sequence;
-        let path = commitment_path(&packet.sourceClient, 1, seq);
-        let (height, proof) = src.tip_proof(&path).await?;
-        src.wait_finalized(height).await?;
-        update_client(&src, &dst, height).await?;
+/// Runs one relay task forever. Errors wait with backoff, then resume from the failed event's block.
+async fn relay(kind: Kind, src: Chain, dst: Chain) {
+    let watched = match kind {
+        Kind::Packets => &src,
+        Kind::Acks => &dst,
+    };
+    let what = format!("{kind:?} {} -> {}", src.name, dst.name);
+    let mut from = watched.from_block;
+    let mut backoff = BACKOFF_MIN;
+    loop {
+        let start = from;
+        match watch(kind, &src, &dst, &mut from).await {
+            Ok(()) => eprintln!("{what}: log stream ended, resubscribing"),
+            Err(e) => eprintln!("{what}: {e:#}, retrying from block {from} in {backoff:?}"),
+        }
+        if from > start {
+            backoff = BACKOFF_MIN;
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(BACKOFF_MAX);
+    }
+}
 
-        let msg = MsgRecvPacket {
-            packet,
-            proofCommitment: proof,
-            proofHeight: Height {
-                revisionNumber: 0,
-                revisionHeight: height,
-            },
-        };
-        let _g = dst.tx_lock.lock().await;
-        let r = dst_router
-            .recvPacket(msg)
-            .send()
-            .await?
-            .get_receipt()
+/// Handles `kind` events from block `from` on: backfill with eth_getLogs, then follow a subscription.
+/// `from` only moves past a block once every event in it was handled.
+async fn watch(kind: Kind, src: &Chain, dst: &Chain, from: &mut u64) -> eyre::Result<()> {
+    let (chain, event) = match kind {
+        Kind::Packets => (src, ICS26Router::SendPacket::SIGNATURE_HASH),
+        Kind::Acks => (dst, ICS26Router::WriteAcknowledgement::SIGNATURE_HASH),
+    };
+    let filter = Filter::new().address(chain.router).event_signature(event);
+    // Subscribe before backfilling so nothing emitted in between is missed.
+    let mut sub = chain.provider.subscribe_logs(&filter).await?.into_stream();
+    let tip = chain.provider.get_block_number().await?;
+
+    while *from <= tip {
+        let to = (*from + LOG_CHUNK - 1).min(tip);
+        let logs = chain
+            .provider
+            .get_logs(&filter.clone().from_block(*from).to_block(to))
             .await?;
-        eyre::ensure!(r.status(), "recvPacket reverted: {:?}", r.transaction_hash);
-        eprintln!(
-            "{} -> {}: recvPacket seq={seq} proofHeight={height}",
-            src.name, dst.name
-        );
+        for log in logs {
+            *from = log.block_number.unwrap_or(*from);
+            handle(kind, src, dst, &log).await?;
+        }
+        *from = to + 1;
+    }
+
+    while let Some(log) = sub.next().await {
+        let n = log
+            .block_number
+            .ok_or_else(|| eyre!("log without block number"))?;
+        if n <= tip {
+            continue; // already handled by the backfill
+        }
+        *from = n;
+        handle(kind, src, dst, &log).await?;
     }
     Ok(())
 }
 
-/// Relays WriteAcknowledgement on `dst` back to ackPacket on `src`.
-async fn relay_acks(src: Chain, dst: Chain) -> eyre::Result<()> {
-    let filter = Filter::new()
-        .address(dst.router)
-        .event_signature(ICS26Router::WriteAcknowledgement::SIGNATURE_HASH);
-    let mut logs = dst.provider.subscribe_logs(&filter).await?.into_stream();
-    let src_router = ICS26Router::new(src.router, &src.provider);
-
-    while let Some(log) = logs.next().await {
-        let ev = ICS26Router::WriteAcknowledgement::decode_log_data(log.data())?;
-        // Single payload packets only, same as ICS26Router today.
-        let ack = ev
-            .acknowledgements
-            .first()
-            .cloned()
-            .ok_or_else(|| eyre!("no ack"))?;
-        let seq = ev.packet.sequence;
-        let path = commitment_path(&ev.packet.destClient, 3, seq);
-        let (height, proof) = dst.tip_proof(&path).await?;
-        dst.wait_finalized(height).await?;
-        update_client(&dst, &src, height).await?;
-
-        let msg = MsgAckPacket {
-            packet: ev.packet,
-            acknowledgement: ack,
-            proofAcked: proof,
-            proofHeight: Height {
-                revisionNumber: 0,
-                revisionHeight: height,
-            },
-        };
-        let _g = src.tx_lock.lock().await;
-        let r = src_router
-            .ackPacket(msg)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
-        eyre::ensure!(r.status(), "ackPacket reverted: {:?}", r.transaction_hash);
-        eprintln!(
-            "{} -> {}: ackPacket seq={seq} proofHeight={height}",
-            dst.name, src.name
-        );
+async fn handle(kind: Kind, src: &Chain, dst: &Chain, log: &Log) -> eyre::Result<()> {
+    match kind {
+        Kind::Packets => relay_packet(src, dst, log).await,
+        Kind::Acks => relay_ack(src, dst, log).await,
     }
+}
+
+/// Whether `chain`'s router has a commitment (packet, receipt or ack) at `path`.
+async fn has_commitment(chain: &Chain, path: &[u8]) -> eyre::Result<bool> {
+    let c = ICS26Router::new(chain.router, &chain.provider)
+        .getCommitment(keccak256(path))
+        .call()
+        .await?;
+    Ok(c != B256::ZERO)
+}
+
+/// Relays one SendPacket on `src` to recvPacket on `dst`. Already handled packets are skipped.
+async fn relay_packet(src: &Chain, dst: &Chain, log: &Log) -> eyre::Result<()> {
+    let packet: Packet = ICS26Router::SendPacket::decode_log_data(log.data())?.packet;
+    let seq = packet.sequence;
+    let path = commitment_path(&packet.sourceClient, 1, seq);
+    // No packet commitment means it was already acked (or timed out).
+    if !has_commitment(src, &path).await?
+        || has_commitment(dst, &commitment_path(&packet.destClient, 2, seq)).await?
+    {
+        return Ok(());
+    }
+    let dst_time = dst
+        .provider
+        .get_block_by_number(BlockNumberOrTag::Latest)
+        .await?
+        .ok_or_else(|| eyre!("{}: no latest block", dst.name))?
+        .header
+        .timestamp;
+    if dst_time >= packet.timeoutTimestamp {
+        eprintln!(
+            "{} -> {}: seq={seq} timed out, skipping",
+            src.name, dst.name
+        );
+        return Ok(());
+    }
+
+    let (height, proof) = src.tip_proof(&path).await?;
+    src.wait_finalized(height).await?;
+    update_client(src, dst, height).await?;
+
+    let msg = MsgRecvPacket {
+        packet,
+        proofCommitment: proof,
+        proofHeight: Height {
+            revisionNumber: 0,
+            revisionHeight: height,
+        },
+    };
+    let _g = dst.tx_lock.lock().await;
+    let r = ICS26Router::new(dst.router, &dst.provider)
+        .recvPacket(msg)
+        .send()
+        .await?
+        .with_timeout(Some(RECEIPT_TIMEOUT))
+        .get_receipt()
+        .await?;
+    eyre::ensure!(r.status(), "recvPacket reverted: {:?}", r.transaction_hash);
+    eprintln!(
+        "{} -> {}: recvPacket seq={seq} proofHeight={height}",
+        src.name, dst.name
+    );
+    Ok(())
+}
+
+/// Relays one WriteAcknowledgement on `dst` back to ackPacket on `src`. Already acked packets are skipped.
+async fn relay_ack(src: &Chain, dst: &Chain, log: &Log) -> eyre::Result<()> {
+    let ev = ICS26Router::WriteAcknowledgement::decode_log_data(log.data())?;
+    let seq = ev.packet.sequence;
+    if !has_commitment(src, &commitment_path(&ev.packet.sourceClient, 1, seq)).await? {
+        return Ok(());
+    }
+    // Single payload packets only, same as ICS26Router today.
+    let ack = ev
+        .acknowledgements
+        .first()
+        .cloned()
+        .ok_or_else(|| eyre!("no ack"))?;
+    let path = commitment_path(&ev.packet.destClient, 3, seq);
+    let (height, proof) = dst.tip_proof(&path).await?;
+    dst.wait_finalized(height).await?;
+    update_client(dst, src, height).await?;
+
+    let msg = MsgAckPacket {
+        packet: ev.packet,
+        acknowledgement: ack,
+        proofAcked: proof,
+        proofHeight: Height {
+            revisionNumber: 0,
+            revisionHeight: height,
+        },
+    };
+    let _g = src.tx_lock.lock().await;
+    let r = ICS26Router::new(src.router, &src.provider)
+        .ackPacket(msg)
+        .send()
+        .await?
+        .with_timeout(Some(RECEIPT_TIMEOUT))
+        .get_receipt()
+        .await?;
+    eyre::ensure!(r.status(), "ackPacket reverted: {:?}", r.transaction_hash);
+    eprintln!(
+        "{} -> {}: ackPacket seq={seq} proofHeight={height}",
+        dst.name, src.name
+    );
     Ok(())
 }
 
@@ -318,8 +428,9 @@ async fn lc_init(rpc: &str, epoch_length: u64) -> eyre::Result<()> {
     Ok(())
 }
 
-/// Env: RELAYER_KEY, and for A and B: {A,B}_WS, {A,B}_ROUTER, {A,B}_CLIENT_ID (client on that chain
-/// tracking the other one), {A,B}_EPOCH_LENGTH, optional {A,B}_NAME.
+/// Env, for A and B: {A,B}_KEY (relayer key used on that chain), {A,B}_WS, {A,B}_ROUTER,
+/// {A,B}_CLIENT_ID (client on that chain tracking the other one), {A,B}_EPOCH_LENGTH, optional
+/// {A,B}_NAME and {A,B}_FROM_BLOCK (where to start scanning that chain's events, default 0).
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -329,19 +440,16 @@ async fn main() -> eyre::Result<()> {
         return lc_init(rpc, len).await;
     }
 
-    let signer: PrivateKeySigner = std::env::var("RELAYER_KEY")
-        .wrap_err("RELAYER_KEY")?
-        .parse()?;
-    let a = Chain::connect("A", signer.clone()).await?;
-    let b = Chain::connect("B", signer).await?;
+    let a = Chain::connect("A").await?;
+    let b = Chain::connect("B").await?;
     eprintln!("relaying {} <-> {}", a.name, b.name);
 
-    // Both directions, packets and acks. Any task error stops the relayer (fail fast for now).
-    tokio::try_join!(
-        relay_packets(a.clone(), b.clone()),
-        relay_acks(a.clone(), b.clone()),
-        relay_packets(b.clone(), a.clone()),
-        relay_acks(b, a),
-    )?;
+    // Both directions, packets and acks. These only return if the process is killed.
+    tokio::join!(
+        relay(Kind::Packets, a.clone(), b.clone()),
+        relay(Kind::Acks, a.clone(), b.clone()),
+        relay(Kind::Packets, b.clone(), a.clone()),
+        relay(Kind::Acks, b, a),
+    );
     Ok(())
 }

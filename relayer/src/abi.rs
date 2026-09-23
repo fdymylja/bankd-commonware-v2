@@ -57,6 +57,7 @@ sol! {
 
         function updateClient(string calldata clientId, bytes calldata updateMsg) external returns (uint8);
         function getClient(string calldata clientId) external view returns (address);
+        function getCommitment(bytes32 hashedPath) external view returns (bytes32);
         function recvPacket(MsgRecvPacket calldata msg_) external;
         function ackPacket(MsgAckPacket calldata msg_) external;
     }
