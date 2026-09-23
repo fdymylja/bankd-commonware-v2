@@ -14,6 +14,7 @@ use clap::Parser as _;
 use commonware_codec::DecodeExt;
 use eyre::Context;
 
+mod bankd_ibc;
 mod bootstrap_shadowfork;
 mod check_abi;
 mod generate_devnet;

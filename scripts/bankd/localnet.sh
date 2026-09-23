@@ -7,6 +7,11 @@
 #
 # Validator i gets http+ws on rpc_port+i and consensus/p2p ports from consensus_port+10*i.
 # Data and logs live in $BANKD_LOCALNET_DIR/<chain_id> (default target/bankd-localnet).
+#
+# IBC contracts are predeployed at genesis (see scripts/bankd/connect.sh to link two chains):
+#   IBC_MODE=hub|spoke|none   adapter mode (default hub), none skips the predeploy
+#   IBC_RELAYERS=0xA,0xB      granted RELAYER_ROLE on the router
+#   IBC_HUB_CLIENTS=bankd-hub spoke only: client ids the adapter trusts as the hub
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -16,6 +21,7 @@ BIN_DIR="$(cargo metadata --format-version 1 --no-deps --manifest-path "$ROOT/Ca
 TEMPO_BIN="${TEMPO_BIN:-$BIN_DIR/tempo}"
 XTASK_BIN="${XTASK_BIN:-$BIN_DIR/tempo-xtask}"
 SECRET="tempo-localnet-signing-key-secret"
+IBC_MODE="${IBC_MODE:-hub}"
 
 cmd="${1:-}"
 CHAIN_ID="${2:-9001}"
@@ -60,12 +66,24 @@ up() {
   local validators_csv
   validators_csv="$(IFS=,; echo "${peers[*]}")"
 
+  # IBC predeploy flags. The contracts come from forge's out/, so build them if they're missing.
+  local ibc=()
+  if [[ "$IBC_MODE" != none ]]; then
+    if [[ ! -f "$ROOT/contracts/out/ICS20NativeAdapter.sol/ICS20NativeAdapter.json" ]]; then
+      echo "building contracts (forge)"
+      (cd "$ROOT/contracts" && forge build -q)
+    fi
+    ibc=(--ibc-predeploy --ibc-mode "$IBC_MODE" --ibc-artifacts "$ROOT/contracts/out")
+    [[ -n "${IBC_RELAYERS:-}" ]] && ibc+=(--ibc-relayers "$IBC_RELAYERS")
+    [[ "$IBC_MODE" == spoke ]] && ibc+=(--ibc-hub-clients "${IBC_HUB_CLIENTS:-bankd-hub}")
+  fi
+
   mkdir -p "$BASE_DIR"
   # Seed ties validator keys to the chain id so reruns are reproducible.
   "$XTASK_BIN" generate-localnet --output "$DIR" --force \
     --chain-id "$CHAIN_ID" --epoch-length "$EPOCH_LENGTH" --accounts 10 \
     --seed "$CHAIN_ID" --validators "$validators_csv" \
-    --no-extra-tokens --no-pairwise-liquidity >"$DIR.gen.log" 2>&1 \
+    --no-extra-tokens --no-pairwise-liquidity ${ibc[@]+"${ibc[@]}"} >"$DIR.gen.log" 2>&1 \
     || { cat "$DIR.gen.log" >&2; exit 1; }
   mv "$DIR.gen.log" "$DIR/generate.log"
   printf '%s\n' "$SECRET" >"$DIR/consensus.secret"

@@ -22,6 +22,8 @@ relayer/
   scripts/gen-lc-fixture.sh                    regenerates contracts/test/fixtures/lc.json
   scripts/gen-e2e-fixture.sh                   regenerates contracts/test/fixtures/e2e.json
 scripts/bankd/bridge-e2e.sh                    live two-chain e2e (hub + spoke localnets, relayer)
+scripts/bankd/connect.sh                       post-genesis: add the light clients on both chains
+xtask/src/bankd_ibc.rs                         genesis predeploy of router + AccessManager + adapter
 ```
 
 Pins: ibc-contracts `0759094e`, commonware monorepo `66c914bb` (sol/ files copied as is, MIT OR Apache-2.0, license files next to them). solc 0.8.28, evm `prague`, via-ir.
@@ -30,12 +32,10 @@ Pins: ibc-contracts `0759094e`, commonware monorepo `66c914bb` (sol/ files copie
 
 `scripts/bankd/bridge-e2e.sh` does the whole thing and passes:
 
-1. brings up hub 9001 (rpc 8545) and spoke 9002 (rpc 9545), 1 validator each. 1-validator DKG and finalization work fine
-2. deploys AccessManager + ICS26Router proxy + ICS20NativeAdapter on both (hub mode / spoke mode) with `forge create` + `cast`
-3. `bankd-relayer lc-init` reads each chain's current group key (genesis `extraData` for epoch 0, else the last boundary header) and a CommonwareLightClient for the other chain gets deployed and registered as `client-0` on each side
-4. spoke: `setTrustedClient(client-0)` and `Native.setMinter(adapter, true)` from the Authority owner (anvil acct 0)
-5. starts the relayer, hub sends 5 BRL to a fresh key -> it gets 5 native BRL on the spoke -> ack clears the hub commitment -> that key sends 2 BRL back (paying gas from the minted BRL) -> hub releases 2 to the receiver, escrow 5 -> 3 -> ack relayed back to the spoke
-6. tears both chains down (always, via trap; `KEEP=1` keeps them)
+1. brings up hub 9001 (rpc 8545) and spoke 9002 (rpc 9545), 1 validator each. 1-validator DKG and finalization work fine. Router, AccessManager and adapter are already in genesis (see "Genesis predeploys" below), and the script checks that at block 0
+2. `scripts/bankd/connect.sh` adds the light clients: `bankd-relayer lc-init` reads each chain's current group key (genesis `extraData` for epoch 0, else the last boundary header), then a CommonwareLightClient for the other chain gets deployed and registered as `spoke-9002` on the hub and `bankd-hub` on the spoke
+3. starts the relayer, hub sends 5 BRL to a fresh key -> it gets 5 native BRL on the spoke -> ack clears the hub commitment -> that key sends 2 BRL back (paying gas from the minted BRL) -> hub releases 2 to the receiver, escrow 5 -> 3 -> ack relayed back to the spoke
+4. tears both chains down (always, via trap; `KEEP=1` keeps them)
 
 ```bash
 cargo build --bin tempo --bin tempo-xtask
@@ -95,7 +95,7 @@ They're real, not hand-made:
 - **Vendored sol/ vs crates.io 2026.9.0.** sol/ is from monorepo HEAD, which is newer than the 2026.9.0 crates tempo uses. The fixtures prove they agree today (varint round, `_FINALIZE` suffix, framed namespace). Re-run the fixture scripts after any commonware bump.
 - **Epoch math** assumes tempo's `FixedEpocher` (`epoch = height / epochLength`, boundary = last block of the epoch). If bankd changes the epoch strategy, the client breaks.
 - **Namespace** is a constructor arg. Tempo uses `TEMPO`. If E1 changes `crates/consensus/src/config.rs` NAMESPACE, deploy with the new one.
-- **Native precompile:** E3's precompile matches the ABI, and minting works live once the owner calls `setMinter(adapter, true)`. Genesis predeploy of the adapter + `--native-minters` isn't done yet.
+- **Native precompile:** E3's precompile matches the ABI. The spoke adapter is a minter from genesis (see below).
 
 ## Gaps
 
@@ -104,5 +104,62 @@ They're real, not hand-made:
 - `misbehaviour()` isn't implemented. Conflicting headers only freeze the client if both get submitted via `updateClient`.
 - Proofs aren't cached per tx (Besu does this with transient storage), so batching many packets repeats the account proof.
 - Adapter: no spoke to spoke routing through the hub, no compliance route policy checks, no `evm_exec` callback yet. If a hub refund goes to a contract that rejects BRL, the ack/timeout reverts and gets stuck.
-- ICS26Router `recvPacket`/`ackPacket` are AccessManager `restricted`. Deploy with public relaying or give the relayer `RELAYER_ROLE`, and point the AccessManager admin at Authority.
-- Genesis deployment of the router + LC + adapter isn't written yet. The e2e deploys after genesis with account 0 as AccessManager admin (so it can relay) and as adapter owner.
+- AccessManager admin and adapter owner are the Authority owner *at genesis*. Rotating Authority ownership later doesn't move them, that's a separate `grantRole`/`transferOwnership` today.
+
+## Genesis predeploys
+
+A fresh chain is bridge-ready from genesis. `tempo-xtask generate-genesis` / `generate-localnet` take:
+
+```bash
+--ibc-predeploy                    # put the IBC contracts in the alloc
+--ibc-mode hub|spoke               # adapter mode (default hub). spoke also adds the adapter to --native-minters
+--ibc-artifacts contracts/out      # forge build output the bytecode comes from
+--ibc-relayers 0xA,0xB             # granted RELAYER_ROLE on the router
+--ibc-hub-clients bankd-hub        # spoke only, client ids the adapter trusts as the hub
+```
+
+`localnet.sh` passes these from env: `IBC_MODE=hub|spoke|none` (default hub), `IBC_RELAYERS`, `IBC_HUB_CLIENTS` (spoke default `bankd-hub`). It runs `forge build` if `contracts/out` is missing.
+
+Same addresses on every chain:
+
+| contract | address |
+|-|-|
+| AccessManager (admin = Authority owner) | `0xF0A69d75d5903afF51d51BBf3b0752B6aBfcEC33` |
+| ICS26Router implementation | `0xD8517Af4f4767F16DF0916966B259BE075711A28` |
+| ICS26Router (ERC1967Proxy, use this one) | `0x4be2f106a550b243B60Fa279228f4e94b1EF8AeC` |
+| ICS20NativeAdapter (owner = Authority owner) | `0xBA01319fA1739A1D69aBae52B64105C74764CA4c` |
+
+How it works (`xtask/src/bankd_ibc.rs`): a throwaway genesis EVM gets a tiny keyless deployer at `0x...49424344` ("IBCD") that CREATEs whatever calldata it's sent. The four contracts are deployed through it with their real constructors, then `addIBCApp("transfer", adapter)`, the RELAYER_ROLE function mapping, relayer grants and the spoke's `setTrustedClient` run as system calls from the owner. The resulting code + storage is copied into the alloc and the deployer is dropped.
+
+Why this over hand-written storage or relocating code:
+
+- Constructors and initializers really run, so immutables (`ROUTER`, `MODE`, UUPS `__self`), the ERC-1967 implementation slot and the Initializable state are exactly what a normal deploy produces. Relocating code to vanity addresses would break UUPS `__self`.
+- Addresses only depend on the deployer's nonce, not on the owner, mode or bytecode, so they're the same on hub and spoke and across contract changes. CREATE2 through a factory would move them whenever the owner or the bytecode changes.
+- It's a separate EVM because revm's system calls finalize the journal, which would drop the precompile state the main genesis EVM keeps there.
+
+Two gotchas:
+
+- AccessManager treats `since == 0` as "no role", so grants made at timestamp 0 never count. The throwaway EVM runs at timestamp 1. That means `hasRole` answers false at block 0 itself (timestamp 0) and true from block 1 on.
+- The bytecode is read from `contracts/out` at genesis time, so `forge build` first. The foundry config (solc 0.8.28, `bytecode_hash = "none"`) keeps it reproducible.
+
+### Light clients: post-genesis, one command
+
+Clients can't be in genesis. A chain's group key only exists once its DKG has run, and in production the two chains are never generated together. So linking two chains is the one admin step after genesis:
+
+```bash
+scripts/bankd/connect.sh http://127.0.0.1:8545 http://127.0.0.1:9545   # hub rpc, spoke rpc
+# env: ADMIN_PK (Authority owner, default anvil acct 0), EPOCH_LENGTH (or HUB_/SPOKE_EPOCH_LENGTH),
+#      HUB_CLIENT_ID (default spoke-<spoke chain id>), SPOKE_CLIENT_ID (default bankd-hub)
+```
+
+It deploys a CommonwareLightClient on each side (from `lc-init`) and registers it under a custom client id, then makes sure the spoke adapter trusts its hub client. It's idempotent, an existing client id is skipped.
+
+For localnet we could compute both group keys from the seeds up front and bake the clients into genesis, but that only works for epoch 0 of two chains generated together, and it'd be a second code path that production never uses. Not worth it.
+
+**Custom client ids matter.** `ICS26Router.addClient(counterparty, client)` (the generated `client-N` one) isn't access controlled, anyone can call it. So pre-trusting `client-0` at genesis would let anyone register their own light client as `client-0` first and mint BRL on the spoke. Custom ids go through the `restricted` overload (AccessManager admin only), and xtask refuses `--ibc-hub-clients` the router would reject as custom ids (`client-`/`channel-` prefix, length outside 4-128, odd chars). `bridge-e2e.sh` checks live that Bob and the relayer can't `addClient("bankd-hub", ...)` or `setTrustedClient` on the spoke, while the admin can. Note the old post-genesis flow had the same race between `addClient` and `setTrustedClient(client-0)`.
+
+Checked (2026-09-23, on top of main `c881bcbee5`):
+
+- `cargo test -p tempo-xtask bankd_ibc`: 5 tests. The two that need `contracts/out` load the alloc into a fresh EVM and check owner, mode, trusted clients, port binding, AccessManager roles + relayer selector mapping, the ERC-1967 slot, that proxy and implementation can't be re-initialized, and that only the admin can add the trusted client id. They skip (with a message) when `forge build` hasn't run
+- `bridge-e2e.sh` passes with the predeploys, default epochs and `EPOCH_LENGTH=30` (boundary updates at 29/31), including the relayer restart and the block 0 / non-admin checks
+- `smoke.sh` passes on a 1-validator localnet with the hub predeploy, and `shield-e2e.sh` still passes (localnet now predeploys by default)
