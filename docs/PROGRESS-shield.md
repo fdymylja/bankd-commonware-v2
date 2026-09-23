@@ -1,6 +1,6 @@
 # Shieldd in bankd v2: progress (E4)
 
-shieldd runs inside the node. Every block drives it, its root lands in reth state, it commits to disk only on commonware finality, and EVM accounts can deposit BRL into the shielded pool through the SHLD precompile. 0x77 shielded txs are accepted by the pool, included by the builder and executed through shieldd. What's still missing is a real proven 0x77 tx end to end (see "Real 0x77 tx").
+shieldd runs inside the node. Every block drives it, its root lands in reth state, it commits to disk only on commonware finality, and EVM accounts can deposit BRL into the shielded pool through the SHLD precompile. 0x77 shielded txs are accepted by the pool, included by the builder and executed through shieldd. A real ZK-proven private transfer and withdrawal now go end to end over 0x77 (see "Real proof e2e").
 
 ## TL;DR
 
@@ -67,19 +67,43 @@ consensus forward_finalized (after FCU)
 - `cargo test -p tempo-precompiles --features test-utils bankd`: bankd + 4 new Shield tests (selector coverage, event, zero/empty/blocked rejects, `getLastCommitment` reads the slots).
 - 0x77 type: `tempo-primitives` roundtrip/hash/sender/Compact tests, and the pool shielded checker test (accepted / rejected / no checker).
 - Live, 1-validator localnet, `scripts/bankd/shield-smoke.sh`: the root slot changes every block and the height slot equals the block number, `getLastCommitment` agrees, a deposit escrows 1 BRL, a refused deposit is refunded, a frozen sender can't deposit, and after a node restart the finalized block's root is unchanged, blocks continue, the height slot is fresh and the escrow is intact.
+- Live, real proofs, `scripts/bankd/shield-e2e.sh`: passes (see "Real proof e2e"). `cargo test -p bankd-shield` still 8 pass after the checkpoint change.
 - Regression: `scripts/bankd/smoke.sh` all checks pass, `scripts/bankd/bridge-e2e.sh` PASS.
 - Pre-existing failure, not from this work: `tempo-evm` `evm::tests::test_tip20_full_evm_storage_actions` (TIP-20 fee test, "lack of funds" since native BRL gas).
 
-## Real 0x77 tx
+## Real proof e2e
 
-Not done. Here's exactly what's missing:
+Done. A real gnark-proven shieldd transfer and withdrawal go through `eth_sendRawTransaction` as 0x77, get checked by the pool, included, executed and finalized, and the wallet sees the new balances. No shieldd source changes.
 
-1. The spend builder, `shieldd/crates/bin/bankd-e2e-spend-builder`, hardcodes the `ubrl` denom (main.rs 354, 417). It needs a denom arg (`abrl`), which is a shieldd change.
-2. Building it with `bundled-proving-keys` means a standalone shieldd workspace build (its own 1.89 toolchain) plus the gnark Go prover runtime. The proving keys are there (`tools/gnark/artifacts`, 961M), but that's a second full build and disk was at 21G free.
-3. It reads a shieldd RocksDB to find the test wallet's note. That means copying `<datadir>/shieldd/state` out of a stopped node (RocksDB is locked while it runs), after a deposit to `shieldd1u29dhz...` (test wallet 0) has finalized.
-4. Then wrap the output: `cast publish 0x77$(cast to-rlp '["0x<tx bytes>"]' | cut -c3-)`.
+```bash
+cargo build --bin tempo --bin tempo-xtask
+cargo build -p bankd-shield-wallet     # separate build, needs Go (compiles the gnark prover dylibs)
+./scripts/bankd/shield-e2e.sh 38545 9001 39000   # brings up its own 1-validator localnet, tears it down
+```
 
-Until then the 0x77 path is covered by unit tests with a mock engine, plus shieldd rejecting junk bytes in pool and execution.
+Last run (debug build): transfer proven in ~25s (3910 byte envelope), withdrawal in ~10s, whole script ~3 min.
+
+How it works:
+
+- **Sync = RocksDB checkpoint.** There's no view service / gRPC in this shieldd (pd's servers are gone, v1's `pcli` path doesn't apply). shieldd's own builders (`bankd-e2e-spend-builder`, `bankd-e2e-host-withdrawal-builder`) sync a `MockClient` straight from a cnidarium `Storage`. So the node exposes `bankd_shieldCheckpoint` (admin module only), which writes a RocksDB checkpoint (hard links) of finalized shieldd state to `<datadir>/shieldd/checkpoints/<height>-<nanos>` and returns `{path, height}`. The wallet opens that copy. Local-host only, and the caller deletes it.
+- **Wallet.** `crates/bankd-shield-wallet` (bin `bankd-shield-wallet`), same logic as those two builders but inside the tempo workspace, so it reads the checkpoint with our vendored cnidarium (rocksdb 0.24) and needs no standalone shieldd build or 1.89 toolchain. Commands: `address`, `balance --db`, `transfer --db --chain-id --to <shieldd addr> --amount`, `withdraw --db --chain-id --to 0x.. --amount`. Keys are BIP44 accounts of shieldd's public test seed (`--account 0` is shieldd's usual test wallet `shieldd1u29dhz...`). It prints the raw `0x77 || rlp([tx])` hex.
+- **Prover.** `shieldd-sdk-mock-client` turns on `bundled-proving-keys`, so building the wallet runs `go build -buildmode=c-shared` for the transfer / note-reshape / withdrawal libs (needs Go, go.mod asks for 1.25.7, `GOTOOLCHAIN=auto` fetches it). At runtime they're found through `SHIELDD_ARTIFACT_ROOT/lib/gnark`, the script symlinks that to the build's `out/gnark/<target>` dir. The wallet is built on its own so these features don't unify into the node binary.
+- **Denom.** The spend builder's `ubrl` is only in its register-asset / register-user paths, the spend picks the note's own asset. The wallet uses `abrl`. Nothing in shieldd needed changing.
+- **Fees.** Zero. The intent has `fee_funding: None` and shieldd runs with empty gas prices, so no `ushieldd` is needed anywhere.
+- **Chain id.** shieldd's chain id is `bankd-<evm chain id>` (`BankdShield::open`), the wallet has to sign with it.
+
+What `shield-e2e.sh` checks:
+
+1. `SHLD.deposit(alice)` of 1 BRL from anvil account 0. After it finalizes, the wallet sees alice = 1e18, bob = 0.
+2. alice -> bob 0.3 BRL, proven and sent as 0x77: receipt status 1, type 0x77, no logs. `from` is the pseudo-sender (not the depositor, nonce 0, balance 0), the SHLD root slot changes, SHLD escrow doesn't move. Wallet: alice 0.7, bob 0.3.
+3. The same raw tx again is refused by the pool (spent nullifier state, shieldd reports its daily volume nullifier first).
+4. bob withdraws 0.1 BRL to a fresh EVM address: the address gets exactly 1e17 in that block, and escrow drops by the same amount. Wallet: bob 0.2.
+5. Node restart: the root at the last finalized block is unchanged, as is the transfer block's root. Balances as seen by the wallet, the recipient's balance and the escrow are all unchanged.
+
+Found along the way:
+
+- reth's `finalized` tag moves a little before shieldd commits that block (`forward_finalized` runs after the FCU), so a checkpoint right after `finalized >= N` can still be at N-1. The script retries until the checkpoint height catches up.
+- `shield-smoke.sh`'s `slot()` reads the block from `$3` but callers pass it as `$2`, so its per-block root checks really read `latest`. Not fixed here (other script), the e2e has its own correct helper.
 
 ## shieldd submodule change
 
@@ -137,6 +161,7 @@ No GPL/AGPL/LGPL anywhere.
 - **Node wiring + finalize hook:** `crates/node/src/{shield.rs,node.rs,lib.rs}`, `crates/node/Cargo.toml`, `crates/consensus/src/executor/{mod.rs,actor.rs}`, root `Cargo.toml` (`bankd-shield` workspace dep), `Cargo.lock`.
 - **SHLD precompile:** already committed by the user in `0f75fc1746`, plus a one-line unused-import fix in `crates/precompiles/src/bankd/shield.rs`.
 - **Scripts/docs:** `scripts/bankd/shield-smoke.sh` (new), `scripts/bankd/localnet.sh` (`restart`, logs append), this file.
+- **Real proof e2e:** `crates/bankd-shield-wallet/**` (new), root `Cargo.toml` (member), `Cargo.lock` (20 new packages, none changed), `crates/bankd-shield/vendor/cnidarium/src/storage.rs` (`Storage::checkpoint`), `crates/bankd-shield/src/executor.rs` (`ShieldExecutor::checkpoint`), `crates/evm/src/shield.rs` (`ShieldEngine::checkpoint`, default unsupported), `crates/node/src/{shield.rs,rpc/shield.rs,rpc/mod.rs,node.rs}` (`bankd_shieldCheckpoint`), `scripts/bankd/shield-e2e.sh` (new).
 
 ## Gaps / flagged
 
@@ -151,3 +176,7 @@ No GPL/AGPL/LGPL anywhere.
 9. `forward_finalized` fails if shieldd's finalize fails (e.g. `RootMismatch`), which stalls finalization forwarding on purpose instead of diverging.
 10. The shared RocksDB block cache fix still isn't in `vendor/cnidarium`.
 11. Disk: the main `target/` is ~85G. I ran `cargo clean` on my old worktree (14.5G). The sibling worktrees' targets are untouched.
+12. Wallet sync is a local checkpoint, not a network protocol. A remote wallet would need a compact-block + witness query service (or a shieldd gRPC server) on the node. Checkpoints aren't pruned by the node.
+13. `bankd_shieldCheckpoint` writes to the node's disk, it's only served on the `admin` module.
+14. Wallet keys come from shieldd's public test seed. Fine for localnets, not for anything else.
+15. The wallet binary is ~220MB debug and pulls sqlite (`shieldd-sdk-view`) through the mock client.

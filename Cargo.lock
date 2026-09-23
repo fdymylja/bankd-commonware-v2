@@ -2403,6 +2403,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "bankd-shield-wallet"
+version = "1.14.0"
+dependencies = [
+ "alloy-rlp",
+ "anyhow",
+ "clap",
+ "cnidarium",
+ "const-hex",
+ "decaf377",
+ "rand_core 0.6.4",
+ "shieldd-sdk-app",
+ "shieldd-sdk-asset",
+ "shieldd-sdk-keys",
+ "shieldd-sdk-mock-client",
+ "shieldd-sdk-num",
+ "shieldd-sdk-proto",
+ "shieldd-sdk-shielded-pool",
+ "shieldd-sdk-transaction",
+ "tokio",
+]
+
+[[package]]
 name = "base-x"
 version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2503,7 +2525,7 @@ dependencies = [
  "bitflags 2.11.1",
  "cexpr",
  "clang-sys",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "proc-macro2 1.0.106",
  "quote",
  "regex",
@@ -2996,6 +3018,12 @@ dependencies = [
  "once_cell",
  "serde",
 ]
+
+[[package]]
+name = "camino"
+version = "1.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbad30e4b4c14a39e3cc8aed085a12a327257c316619c93581e017bc52be591"
 
 [[package]]
 name = "cast"
@@ -4756,7 +4784,7 @@ dependencies = [
  "enr",
  "fnv",
  "futures",
- "hashlink",
+ "hashlink 0.11.0",
  "hex",
  "hkdf",
  "lazy_static",
@@ -5149,6 +5177,18 @@ checksum = "0d42773cb15447644d170be20231a3268600e0c4cea8987d013b93ac973d3cf7"
 dependencies = [
  "blake2b_simd 1.0.5",
 ]
+
+[[package]]
+name = "fallible-iterator"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
+
+[[package]]
+name = "fallible-streaming-iterator"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
 name = "fast-float2"
@@ -5599,6 +5639,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "genawaiter"
+version = "0.99.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c86bd0361bcbde39b13475e6e36cb24c329964aa2611be285289d1e4b751c1a0"
+dependencies = [
+ "genawaiter-macro",
+ "genawaiter-proc-macro",
+ "proc-macro-hack",
+]
+
+[[package]]
+name = "genawaiter-macro"
+version = "0.99.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b32dfe1fdfc0bbde1f22a5da25355514b5e450c33a6af6770884c8750aedfbc"
+
+[[package]]
+name = "genawaiter-proc-macro"
+version = "0.99.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "784f84eebc366e15251c4a8c3acee82a6a6f427949776ecb88377362a9621738"
+dependencies = [
+ "proc-macro-error",
+ "proc-macro-hack",
+ "proc-macro2 1.0.106",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "generator"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5894,6 +5964,15 @@ dependencies = [
  "foldhash 0.2.0",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "hashlink"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ba4ff7128dee98c7dc9794b6a411377e1404dba1c97deb8d1a55297bd25d8af"
+dependencies = [
+ "hashbrown 0.14.5",
 ]
 
 [[package]]
@@ -7657,6 +7736,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "libsqlite3-sys"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e99fb7a497b1e3339bc746195567ed8d3e24945ecd636e3619d20b9de9e9149"
+dependencies = [
+ "cc",
+ "pkg-config",
+ "vcpkg",
+]
+
+[[package]]
 name = "libusb1-sys"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9380,6 +9470,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "proc-macro-error"
+version = "0.4.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18f33027081eba0a6d8aba6d1b1c3a3be58cbb12106341c2d5759fcd9b5277e7"
+dependencies = [
+ "proc-macro-error-attr",
+ "proc-macro2 1.0.106",
+ "quote",
+ "syn 1.0.109",
+ "version_check",
+]
+
+[[package]]
+name = "proc-macro-error-attr"
+version = "0.4.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a5b4b77fdb63c1eca72173d68d24501c54ab1269409f6b672c85deb18af69de"
+dependencies = [
+ "proc-macro2 1.0.106",
+ "quote",
+ "syn 1.0.109",
+ "syn-mid",
+ "version_check",
+]
+
+[[package]]
 name = "proc-macro-error-attr2"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9422,6 +9538,12 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "proc-macro-hack"
+version = "0.5.20+deprecated"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc375e1527247fe1a97d8b7156678dfe7c1af2fc075c9a4db3690ecd2a148068"
 
 [[package]]
 name = "proc-macro2"
@@ -9801,6 +9923,28 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
+name = "r2d2"
+version = "0.8.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51de85fb3fb6524929c8a2eb85e6b6d363de4e8c48f9e2c2eac4944abc181c93"
+dependencies = [
+ "log",
+ "parking_lot",
+ "scheduled-thread-pool",
+]
+
+[[package]]
+name = "r2d2_sqlite"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb14dba8247a6a15b7fdbc7d389e2e6f03ee9f184f87117706d509c092dfe846"
+dependencies = [
+ "r2d2",
+ "rusqlite",
+ "uuid",
+]
 
 [[package]]
 name = "radium"
@@ -13389,6 +13533,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusqlite"
+version = "0.32.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7753b721174eb8ff87a9a0e799e2d7bc3749323e773db92e0984debb00019d6e"
+dependencies = [
+ "bitflags 2.11.1",
+ "fallible-iterator",
+ "fallible-streaming-iterator",
+ "hashlink 0.9.1",
+ "libsqlite3-sys",
+ "smallvec",
+]
+
+[[package]]
 name = "rust-embed"
 version = "8.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13698,6 +13856,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
 dependencies = [
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "scheduled-thread-pool"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3cbc66816425a074528352f5789333ecff06ca41b36b0b0efdfbb29edc391a19"
+dependencies = [
+ "parking_lot",
 ]
 
 [[package]]
@@ -14333,6 +14500,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "shieldd-sdk-disclosure"
+version = "2.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.21.7",
+ "decaf377",
+ "decaf377-ka",
+ "decaf377-rdsa",
+ "hex",
+ "num-bigint",
+ "poseidon377",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "shieldd-sdk-asset",
+ "shieldd-sdk-compliance",
+ "shieldd-sdk-keys",
+ "shieldd-sdk-proto",
+ "shieldd-sdk-shielded-pool",
+ "shieldd-sdk-transaction",
+]
+
+[[package]]
 name = "shieldd-sdk-fee"
 version = "2.1.0"
 dependencies = [
@@ -14383,6 +14574,25 @@ dependencies = [
  "shieldd-sdk-tct",
  "thiserror 1.0.69",
  "tracing",
+]
+
+[[package]]
+name = "shieldd-sdk-mock-client"
+version = "2.1.0"
+dependencies = [
+ "anyhow",
+ "cnidarium",
+ "decaf377",
+ "rand_core 0.6.4",
+ "shieldd-sdk-asset",
+ "shieldd-sdk-compact-block",
+ "shieldd-sdk-compliance",
+ "shieldd-sdk-keys",
+ "shieldd-sdk-sct",
+ "shieldd-sdk-shielded-pool",
+ "shieldd-sdk-tct",
+ "shieldd-sdk-transaction",
+ "shieldd-sdk-view",
 ]
 
 [[package]]
@@ -14442,6 +14652,7 @@ dependencies = [
  "poseidon377",
  "rand 0.8.6",
  "rand_core 0.6.4",
+ "rayon",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -14497,6 +14708,7 @@ dependencies = [
  "poseidon377",
  "rand 0.8.6",
  "rand_core 0.6.4",
+ "rayon",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -14534,6 +14746,7 @@ dependencies = [
  "hex",
  "imbl",
  "jmt",
+ "libloading",
  "metrics",
  "once_cell",
  "poseidon377",
@@ -14631,6 +14844,45 @@ dependencies = [
  "serde",
  "shieldd-sdk-proto",
  "shieldd-sdk-tct",
+]
+
+[[package]]
+name = "shieldd-sdk-view"
+version = "2.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "camino",
+ "decaf377",
+ "digest 0.9.0",
+ "genawaiter",
+ "hex",
+ "once_cell",
+ "r2d2",
+ "r2d2_sqlite",
+ "rand 0.8.6",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "shieldd-sdk-app",
+ "shieldd-sdk-asset",
+ "shieldd-sdk-compact-block",
+ "shieldd-sdk-compliance",
+ "shieldd-sdk-disclosure",
+ "shieldd-sdk-fee",
+ "shieldd-sdk-keys",
+ "shieldd-sdk-num",
+ "shieldd-sdk-proof-params",
+ "shieldd-sdk-proto",
+ "shieldd-sdk-sct",
+ "shieldd-sdk-shielded-pool",
+ "shieldd-sdk-tct",
+ "shieldd-sdk-transaction",
+ "shieldd-sdk-txhash",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -14973,6 +15225,17 @@ dependencies = [
  "proc-macro2 1.0.106",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "syn-mid"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fea305d57546cc8cd04feb14b62ec84bf17f50e3f7b12560d7bfa9265f39d9ed"
+dependencies = [
+ "proc-macro2 1.0.106",
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -17024,6 +17287,7 @@ checksum = "ddd74a9687298c6858e9b88ec8935ec45d22e8fd5e6394fa1bd4e99a87789c76"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
+ "rand 0.10.2",
  "wasm-bindgen",
 ]
 

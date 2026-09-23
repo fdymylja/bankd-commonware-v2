@@ -21,6 +21,7 @@ members = [
   "bin/tempo-sidecar",
   "crates/alloy",
   "crates/bankd-shield",
+  "crates/bankd-shield-wallet",
   "crates/chainspec",
   "crates/consensus",
   "crates/consensus-config",

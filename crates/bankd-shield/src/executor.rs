@@ -212,6 +212,9 @@ struct Open {
 /// thread (use `spawn_blocking` / `block_in_place`). Same model as the cgo handle.
 pub struct ShieldExecutor {
     execution: HostExecution,
+    // Same store `execution` owns, kept for checkpoints.
+    storage: Storage,
+    checkpoints_dir: PathBuf,
     records: CommitRecords,
     outputs_dir: PathBuf,
     last_committed: Option<u64>,
@@ -285,9 +288,11 @@ impl ShieldExecutor {
                 .into());
             }
         }
-        let execution = HostExecution::new(storage);
+        let execution = HostExecution::new(storage.clone());
         Ok(Self {
             execution,
+            storage,
+            checkpoints_dir: home.join("checkpoints"),
             records,
             outputs_dir,
             last_committed,
@@ -301,6 +306,21 @@ impl ShieldExecutor {
     /// Last finalized shieldd height and root, `None` before genesis.
     pub fn committed(&self) -> Option<(u64, B256)> {
         self.last_committed.map(|h| (h, self.tip_root))
+    }
+
+    /// Writes a RocksDB checkpoint of finalized state under `home/checkpoints/` and returns
+    /// its dir and height. Only finalized blocks are on disk, so a wallet syncing from it
+    /// never sees a candidate that could still be dropped.
+    pub fn checkpoint(&self) -> Result<(PathBuf, u64), ShieldError> {
+        let height = self.last_committed.ok_or(ShieldError::NotInitialized)?;
+        std::fs::create_dir_all(&self.checkpoints_dir).map_err(anyhow::Error::from)?;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(anyhow::Error::from)?
+            .as_nanos();
+        let dir = self.checkpoints_dir.join(format!("{height:020}-{nanos}"));
+        self.storage.checkpoint(&dir)?;
+        Ok((dir, height))
     }
 
     /// Number of sealed, unfinalized candidates held in memory.

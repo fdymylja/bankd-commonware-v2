@@ -19,6 +19,13 @@ ensure_shared_config() {
   mkdir -p "$WT_ROOT/.cargo"
   local cfg="$WT_ROOT/.cargo/config.toml"
   [[ -f "$cfg" ]] && return
+  # Seed from the main checkout's build so deps (reth, rocksdb, shieldd) aren't rebuilt cold.
+  # cp -c is an APFS clone: instant, and it takes no extra disk until files change.
+  if [[ ! -d "$SHARED_TARGET" && -d "$ROOT/target/debug" ]]; then
+    mkdir -p "$SHARED_TARGET"
+    cp -cR "$ROOT/target/debug" "$SHARED_TARGET/debug"
+    rm -rf "$SHARED_TARGET/debug/incremental"
+  fi
   cat >"$cfg" <<EOF
 [build]
 target-dir = "$SHARED_TARGET"

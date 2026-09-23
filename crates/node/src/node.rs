@@ -3,10 +3,10 @@ use crate::{
     engine::TempoEngineValidator,
     gossip::GossipProtocol,
     rpc::{
-        TempoAdminApi, TempoAdminApiServer, TempoEthApi, TempoEthApiBuilder, TempoEthExt,
-        TempoEthExtApiServer, TempoForkScheduleApiServer, TempoForkScheduleRpc,
-        TempoOperatorApiServer, TempoOperatorRpc, TempoSimulate, TempoSimulateApiServer,
-        TempoToken, TempoTokenApiServer,
+        BankdShieldApiServer, BankdShieldRpc, TempoAdminApi, TempoAdminApiServer, TempoEthApi,
+        TempoEthApiBuilder, TempoEthExt, TempoEthExtApiServer, TempoForkScheduleApiServer,
+        TempoForkScheduleRpc, TempoOperatorApiServer, TempoOperatorRpc, TempoSimulate,
+        TempoSimulateApiServer, TempoToken, TempoTokenApiServer,
     },
 };
 use alloy_primitives::B256;
@@ -386,6 +386,7 @@ where
             ctx.node.provider.clone(),
             ctx.node.components.evm_config.clone(),
         );
+        let shield = ctx.node.components.evm_config.shield.clone();
 
         self.inner
             .launch_add_ons_with(ctx, move |container| {
@@ -411,6 +412,12 @@ where
                     operator.into_rpc(),
                 )?;
                 modules.merge_if_module_configured(RethRpcModule::Admin, admin.into_rpc())?;
+                if let Some(shield) = shield {
+                    modules.merge_if_module_configured(
+                        RethRpcModule::Admin,
+                        BankdShieldRpc::new(shield).into_rpc(),
+                    )?;
+                }
                 modules.merge_if_module_configured(RethRpcModule::Eth, eth_config.into_rpc())?;
 
                 Ok(())

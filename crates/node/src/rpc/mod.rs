@@ -4,6 +4,7 @@ pub mod error;
 pub mod eth_ext;
 pub mod fork_schedule;
 pub mod operator;
+pub mod shield;
 pub mod simulate;
 pub mod token;
 
@@ -18,6 +19,7 @@ pub use operator::{TempoOperatorApiServer, TempoOperatorRpc};
 use reth_primitives_traits::{HeaderTy, SealedHeaderFor, TransactionMeta, WithEncoded};
 use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcTxReq};
 use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin};
+pub use shield::{BankdShieldApiServer, BankdShieldRpc};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
 use std::{marker::PhantomData, sync::Arc};
 pub use tempo_alloy::rpc::TempoTransactionRequest;

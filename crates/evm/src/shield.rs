@@ -67,6 +67,12 @@ pub trait ShieldEngine: Send + Sync + Debug {
 
     /// Pool check of a 0x77 payload (proof, fee, nullifiers) against finalized state.
     fn check_tx(&self, payload: &[u8]) -> Result<(), String>;
+
+    /// Snapshots finalized shieldd state to disk for an offline wallet to sync from.
+    /// Returns the checkpoint dir and the finalized height it holds.
+    fn checkpoint(&self) -> Result<(std::path::PathBuf, u64), String> {
+        Err("checkpoints not supported".to_owned())
+    }
 }
 
 /// Shared handle stored in the EVM config.

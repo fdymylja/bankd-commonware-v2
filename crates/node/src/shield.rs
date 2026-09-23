@@ -96,6 +96,11 @@ impl ShieldEngine for BankdShield {
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
+
+    fn checkpoint(&self) -> Result<(std::path::PathBuf, u64), String> {
+        // The exec lock keeps finalize out, so the checkpoint matches the height.
+        self.0.exec().checkpoint().map_err(err)
+    }
 }
 
 struct Session {

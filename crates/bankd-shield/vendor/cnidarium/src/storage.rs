@@ -582,6 +582,13 @@ impl Storage {
         self.commit_batch(batch)
     }
 
+    /// Writes a consistent RocksDB checkpoint of the store to `path`, which must not exist.
+    /// bankd: lets a wallet sync from a live node without stopping it.
+    pub fn checkpoint(&self, path: &std::path::Path) -> Result<()> {
+        rocksdb::checkpoint::Checkpoint::new(&self.0.db)?.create_checkpoint(path)?;
+        Ok(())
+    }
+
     /// Returns the internal handle to RocksDB, this is useful to test adjacent storage crates.
     #[cfg(test)]
     pub(crate) fn db(&self) -> Arc<DB> {
