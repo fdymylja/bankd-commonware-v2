@@ -11,11 +11,16 @@ keywords = ["blockchain", "ethereum", "evm", "payments", "tempo"]
 publish = false
 
 [workspace]
-exclude = ["crates/nitro-attestation/fuzz"]
+exclude = [
+  "crates/nitro-attestation/fuzz",
+  "crates/bankd-shield/vendor/cnidarium",
+  "shieldd",
+]
 members = [
   "bin/tempo",
   "bin/tempo-sidecar",
   "crates/alloy",
+  "crates/bankd-shield",
   "crates/chainspec",
   "crates/consensus",
   "crates/consensus-config",
@@ -415,3 +420,16 @@ vergen-git2 = "10.0.1"
 # reth-trie-db = { path = "../reth/crates/trie/db" }
 # reth-trie-parallel = { path = "../reth/crates/trie/parallel" }
 # reth-trie-sparse = { path = "../reth/crates/trie/sparse" }
+
+# bankd-shield: mirrors shieldd's own [patch.crates-io] (patches only apply from
+# the root workspace), plus cnidarium vendored onto rocksdb 0.24 so it shares
+# librocksdb-sys with reth-provider (a `links` crate, only one version allowed).
+# Branch (not rev) so the git deps that also point at these branches unify;
+# Cargo.lock pins the same commits as shieldd's lock (cargo update --precise).
+[patch.crates-io]
+cnidarium = { path = "crates/bankd-shield/vendor/cnidarium" }
+decaf377 = { git = "https://github.com/mizufinance/decaf377", branch = "main" }
+decaf377-rdsa = { git = "https://github.com/mizufinance/decaf377-rdsa", branch = "main" }
+poseidon377 = { git = "https://github.com/mizufinance/poseidon377", branch = "main" }
+poseidon-permutation = { git = "https://github.com/mizufinance/poseidon377", branch = "main" }
+poseidon-parameters = { git = "https://github.com/mizufinance/poseidon377", branch = "main" }

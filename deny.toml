@@ -76,6 +76,23 @@ name = "rustls-webpki"
 expression = "LicenseRef-rustls-webpki"
 license-files = [{ path = "LICENSE", hash = 0x001c7e6c }]
 
+# Vendored ripp crates inside shieldd's proof-aggregation. The parent dir ships
+# LICENSE-MIT/LICENSE-APACHE but the manifests omit the field.
+[[licenses.clarify]]
+name = "ark-dh-commitments"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "ark-inner-products"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "ark-ip-proofs"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
 # This section is considered when running `cargo deny check sources`.
 # More documentation about the 'sources' section can be found here:
 # https://embarkstudios.github.io/cargo-deny/checks/sources/cfg.html

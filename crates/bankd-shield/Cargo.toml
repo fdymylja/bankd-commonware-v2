@@ -1,0 +1,37 @@
+[package]
+name = "bankd-shield"
+description = "Shieldd privacy layer embedded in bankd v2"
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Path deps into the shieldd submodule. Their `workspace = true`
+# fields resolve against shieldd's own workspace, but its [patch] section does not
+# apply here, so the root Cargo.toml mirrors it.
+shieldd-sdk-app = { path = "../../shieldd/crates/core/app" }
+shieldd-sdk-proto = { path = "../../shieldd/crates/proto" }
+shieldd-sdk-sct = { path = "../../shieldd/crates/core/component/sct", features = ["component"] }
+shieldd-sdk-transaction = { path = "../../shieldd/crates/core/transaction" }
+# Patched at the workspace root to the vendored copy (rocksdb 0.24, same as reth).
+cnidarium = { version = "0.83", features = ["migration"] }
+tendermint = { version = "0.40.3", default-features = false }
+
+alloy-primitives.workspace = true
+anyhow = "1"
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+shieldd-sdk-keys = { path = "../../shieldd/crates/core/keys" }
+tempfile.workspace = true
