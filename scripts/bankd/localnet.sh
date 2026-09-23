@@ -11,8 +11,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BASE_DIR="${BANKD_LOCALNET_DIR:-$ROOT/target/bankd-localnet}"
-TEMPO_BIN="${TEMPO_BIN:-$ROOT/target/debug/tempo}"
-XTASK_BIN="${XTASK_BIN:-$ROOT/target/debug/tempo-xtask}"
+# Ask cargo where binaries go, so a shared target dir (see worktree.sh) works too.
+BIN_DIR="$(cargo metadata --format-version 1 --no-deps --manifest-path "$ROOT/Cargo.toml" | jq -r .target_directory)/debug"
+TEMPO_BIN="${TEMPO_BIN:-$BIN_DIR/tempo}"
+XTASK_BIN="${XTASK_BIN:-$BIN_DIR/tempo-xtask}"
 SECRET="tempo-localnet-signing-key-secret"
 
 cmd="${1:-}"
