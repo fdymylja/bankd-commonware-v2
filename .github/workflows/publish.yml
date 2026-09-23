@@ -1,0 +1,42 @@
+name: Publish alloy crates
+
+permissions: {}
+
+on:
+  pull_request:
+    types: [closed]
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+
+jobs:
+  publish:
+    name: Publish
+    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'changelog-release/')
+    runs-on: depot-ubuntu-latest-4
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+
+      - name: Authenticate with crates.io
+        uses: tempoxyz/gh-actions/vendor/rust-lang/crates-io-auth-action@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+        id: auth
+
+      - name: Publish crates via sanitize pipeline
+        run: ./scripts/publish-crates.sh --publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

@@ -1,0 +1,68 @@
+name: RPC Tests
+
+permissions: {}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/node/**'
+      - 'crates/primitives/**'
+      - 'crates/revm/**'
+  pull_request:
+    paths:
+      - 'crates/node/**'
+      - 'crates/primitives/**'
+      - 'crates/revm/**'
+  merge_group:
+
+env:
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  RUSTC_WRAPPER: "sccache"
+  TEMPO_TESTNET_RPC_URL: ${{ secrets.TEMPO_TESTNET_RPC_URL || 'https://rpc.moderato.tempo.xyz' }}
+  TEMPO_DEVNET_RPC_URL: ${{ secrets.TEMPO_DEVNET_RPC_URL || 'https://rpc.devnet.tempoxyz.dev' }}
+
+jobs:
+  rpc-tests:
+    name: rpc-tests (${{ matrix.network }})
+    runs-on: depot-ubuntu-latest-4
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - network: testnet
+            allow_failure: false
+          - network: devnet
+            allow_failure: true
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+      - uses: tempoxyz/gh-actions/actions/setup-mold@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+      - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@bce53819ffa60fcdf8f0f349686d807e5a66a71b # 2026-09-21T21-56-41Z-bce53819
+        with:
+          tool: nextest@0.9.127
+      - name: Build RPC tests
+        id: build
+        continue-on-error: ${{ matrix.allow_failure }}
+        run: cargo nextest run --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)' --no-run
+      - name: Run RPC tests
+        id: run
+        if: steps.build.outcome == 'success'
+        continue-on-error: ${{ matrix.allow_failure }}
+        run: cargo nextest run --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)'
+      - name: Report allowed devnet failure
+        if: matrix.allow_failure && (steps.build.outcome == 'failure' || steps.run.outcome == 'failure')
+        run: echo '::warning::Devnet RPC tests failed, but this check is allowed to fail so merge queue processing can continue.'
