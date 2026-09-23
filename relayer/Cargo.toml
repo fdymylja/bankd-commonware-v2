@@ -1,0 +1,38 @@
+[package]
+name = "bankd-relayer"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Standalone workspace so the node workspace (and its Cargo.toml) stays untouched.
+[workspace]
+
+[[bin]]
+name = "bankd-relayer"
+path = "src/main.rs"
+
+[[bin]]
+name = "vectorgen"
+path = "src/bin/vectorgen.rs"
+
+[dependencies]
+tempo-primitives = { path = "../crates/primitives", default-features = false, features = ["serde"] }
+tempo-dkg-onchain-artifacts = { path = "../crates/dkg-onchain-artifacts" }
+commonware-codec = "2026.9.0"
+commonware-consensus = "2026.9.0"
+commonware-cryptography = { version = "2026.9.0", features = ["std"] }
+commonware-parallel = { version = "2026.9.0", features = ["std"] }
+commonware-utils = "2026.9.0"
+commonware-math = "2026.9.0"
+alloy-primitives = "1.7.3"
+alloy-rlp = "0.3.16"
+alloy-consensus = "2.4.2"
+blst = "0.3"
+rand = "0.10"
+serde_json = "1"
+eyre = "0.6.12"
+alloy = { version = "2.4.2", features = ["provider-ws", "pubsub", "rpc-types", "sol-types", "contract", "signer-local", "network"] }
+tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread", "time"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }

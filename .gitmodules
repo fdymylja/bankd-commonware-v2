@@ -7,3 +7,18 @@
 [submodule "tips/verify/lib/solady"]
 	path = tips/verify/lib/solady
 	url = https://github.com/vectorized/solady
+[submodule "contracts/lib/forge-std"]
+	path = contracts/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std.git
+[submodule "contracts/lib/ibc-contracts"]
+	path = contracts/lib/ibc-contracts
+	url = https://github.com/cosmos/ibc-contracts.git
+[submodule "contracts/lib/openzeppelin-contracts"]
+	path = contracts/lib/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts.git
+[submodule "contracts/lib/openzeppelin-contracts-upgradeable"]
+	path = contracts/lib/openzeppelin-contracts-upgradeable
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable.git
+[submodule "contracts/lib/permit2"]
+	path = contracts/lib/permit2
+	url = https://github.com/Uniswap/permit2.git

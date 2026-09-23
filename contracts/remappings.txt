@@ -1,0 +1,6 @@
+forge-std/=lib/forge-std/src/
+@openzeppelin-contracts/=lib/openzeppelin-contracts/contracts/
+@openzeppelin-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/
+@uniswap/permit2/=lib/permit2/
+@ibc/=lib/ibc-contracts/ibc-solidity/
+@commonware/=vendor/commonware/

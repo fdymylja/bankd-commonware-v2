@@ -1,0 +1,22 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib", "vendor"]
+test = "test"
+script = "script"
+solc = "0.8.28"
+# prague for the EIP-2537 BLS12-381 precompiles used by the commonware verifier
+evm_version = "prague"
+optimizer = true
+optimizer_runs = 10_000
+via_ir = true
+bytecode_hash = "none"
+fs_permissions = [{ access = "read-write", path = "./test/fixtures" }]
+
+[fmt]
+bracket_spacing = true
+line_length = 120
+int_types = "long"
+quote_style = "double"
+tab_width = 4
+ignore = ["vendor/**", "lib/**"]
