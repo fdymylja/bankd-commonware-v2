@@ -123,6 +123,20 @@ pub enum TempoInvalidTransaction {
         address: Address,
     },
 
+    /// bankd: sender, fee payer or a call target is frozen or sanctioned.
+    #[error("account {address} is frozen or sanctioned")]
+    AccountBlocked {
+        /// Blocked account.
+        address: Address,
+    },
+
+    /// bankd: value sent to a bankd precompile, which can't handle it.
+    #[error("value sent to bankd precompile {address}")]
+    ValueToBankdPrecompile {
+        /// Target precompile.
+        address: Address,
+    },
+
     /// Value transfer not allowed.
     #[error("value transfer not allowed")]
     ValueTransferNotAllowed,
@@ -303,6 +317,7 @@ impl TempoInvalidTransaction {
             | Self::KeyAuthorizationChainIdMismatch { .. }
             | Self::ValueTransferNotAllowed
             | Self::ValueTransferNotAllowedInAATx
+            | Self::ValueToBankdPrecompile { .. }
             | Self::ExpiringNonceMissingTxEnv
             | Self::ExpiringNonceMissingValidBefore
             | Self::ExpiringNonceNonceNotZero
@@ -317,6 +332,7 @@ impl TempoInvalidTransaction {
             | Self::FeeTokenNotTip20 { .. }
             | Self::FeeTokenNotUsdCurrency { .. }
             | Self::FeeTokenPaused { .. }
+            | Self::AccountBlocked { .. }
             | Self::AccessKeyExpiryInPast { .. }
             | Self::KeychainPrecompileError { .. }
             | Self::KeychainValidationFailed { .. }

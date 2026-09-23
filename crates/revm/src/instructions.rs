@@ -1,11 +1,12 @@
 use crate::{evm::TempoContext, gas_credits};
 use alloy_evm::Database;
 use revm::{
-    bytecode::opcode::SSTORE,
+    bytecode::opcode::{SELFDESTRUCT, SSTORE},
+    context::JournalTr,
     handler::instructions::EthInstructions,
     interpreter::{
         Instruction, InstructionContext, InstructionResult,
-        instructions::{gas_table_spec, instruction_table},
+        instructions::{gas_table_spec, host, instruction_table, utility::IntoAddress},
         interpreter::EthInterpreter,
         push,
     },
@@ -29,6 +30,31 @@ fn millis_timestamp<DB: Database>(
     Ok(())
 }
 
+/// bankd: SELFDESTRUCT can't move native BRL out of or into a blocked account.
+fn selfdestruct<DB: Database>(
+    context: TempoInstructionContext<'_, DB>,
+) -> Result<(), InstructionResult> {
+    let beneficiary = context.interpreter.stack.peek(0)?.into_address();
+    let contract = context.interpreter.input.target_address;
+    let journal = &mut context.host.journaled_state;
+    let balance = journal
+        .load_account(contract)
+        .map_err(|_| InstructionResult::FatalExternalError)?
+        .data
+        .info
+        .balance;
+    if !balance.is_zero() {
+        for account in [contract, beneficiary] {
+            if crate::bankd::is_blocked(journal, account)
+                .map_err(|_| InstructionResult::FatalExternalError)?
+            {
+                return Err(InstructionResult::Revert);
+            }
+        }
+    }
+    host::selfdestruct(context)
+}
+
 /// Returns configured instructions table for Tempo.
 pub(crate) fn tempo_instructions<DB: Database>(
     spec: TempoHardfork,
@@ -49,6 +75,8 @@ pub(crate) fn tempo_instructions<DB: Database>(
     } else {
         EthInstructions::new_mainnet_with_spec(spec.into())
     };
+
+    instructions.instruction_table_mut()[SELFDESTRUCT as usize] = Instruction::new(selfdestruct);
 
     if !spec.is_t1c() {
         instructions.insert_instruction(

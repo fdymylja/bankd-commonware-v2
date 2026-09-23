@@ -2039,6 +2039,75 @@ mod tests {
         );
     }
 
+    /// bankd: freezes `account` by writing its Compliance status slot.
+    fn freeze_in_provider(
+        validator: &TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
+        account: Address,
+    ) {
+        use tempo_precompiles::bankd::compliance::{FROZEN, status_slot};
+        validator.client().add_account(
+            tempo_contracts::precompiles::COMPLIANCE_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO)
+                .extend_storage([(status_slot(account).into(), U256::from(FROZEN))]),
+        );
+    }
+
+    fn assert_blocked(
+        outcome: &TransactionValidationOutcome<TempoPooledTransaction>,
+        account: Address,
+    ) {
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, err) => assert!(
+                matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::Evm(
+                        TempoInvalidTransaction::AccountBlocked { address }
+                    )) if *address == account
+                ),
+                "unexpected error: {err:?}"
+            ),
+            _ => panic!("Expected AccountBlocked, got: {outcome:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_frozen_sender_rejected() {
+        let transaction = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let validator = setup_validator(&transaction, 0);
+        freeze_in_provider(&validator, transaction.sender());
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction.clone())
+            .await;
+        assert_blocked(&outcome, transaction.sender());
+    }
+
+    #[tokio::test]
+    async fn test_frozen_aa_call_target_rejected() {
+        let frozen = Address::random();
+        let transaction = TxBuilder::aa(Address::random())
+            .calls(vec![
+                tempo_primitives::transaction::Call {
+                    to: TxKind::Call(Address::random()),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                },
+                tempo_primitives::transaction::Call {
+                    to: TxKind::Call(frozen),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                },
+            ])
+            .build();
+        let validator = setup_validator(&transaction, 0);
+        freeze_in_provider(&validator, frozen);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+        assert_blocked(&outcome, frozen);
+    }
+
     #[tokio::test]
     async fn test_zero_value_passes_value_check() {
         // Create a zero-value EIP-1559 transaction (value defaults to 0 in TxBuilder)

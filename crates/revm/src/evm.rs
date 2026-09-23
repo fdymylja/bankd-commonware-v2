@@ -277,6 +277,15 @@ where
         ItemOrResult<&mut Self::Frame, <Self::Frame as FrameTr>::FrameResult>,
         ContextError<DB::Error>,
     > {
+        // bankd: compliance and precompile-value checks on every value-moving frame.
+        if let Some(result) = crate::bankd::check_frame(
+            &mut self.inner.ctx.journaled_state,
+            &frame_input.frame_input,
+        )
+        .map_err(ContextError::Db)?
+        {
+            return Ok(result);
+        }
         self.inner.frame_init(frame_input)
     }
 

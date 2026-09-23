@@ -1003,6 +1003,9 @@ where
         let fee_token = NATIVE_FEE_TOKEN;
         evm.fee_token = Some(fee_token);
 
+        // bankd: frozen or sanctioned accounts can't send, pay fees or be called.
+        crate::bankd::validate_tx_compliance(journal, tx, fee_payer)??;
+
         // Load the fee payer's native balance
         let account_balance = journal.load_account(fee_payer)?.data.info.balance;
 
@@ -1658,6 +1661,8 @@ where
         {
             return Err(TempoInvalidTransaction::SelfSponsoredFeePayer.into());
         }
+
+        crate::bankd::validate_no_value_to_precompiles(&evm.ctx.tx)?;
 
         // First perform standard validation (header + transaction environment).
         // This validates: prevrandao, excess_blob_gas, chain_id, gas limits, tx type support, etc.

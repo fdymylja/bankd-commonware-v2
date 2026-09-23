@@ -7,6 +7,7 @@
 #[cfg(not(test))]
 use tracing as _;
 
+pub mod bankd;
 mod common;
 pub use common::{TempoStateAccess, TempoTx};
 pub mod error;
