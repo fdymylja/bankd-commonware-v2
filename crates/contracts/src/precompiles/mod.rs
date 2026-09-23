@@ -1,5 +1,6 @@
 pub mod account_keychain;
 pub mod address_registry;
+pub mod bankd;
 pub mod common_errors;
 pub mod current_committee;
 pub mod nonce;
@@ -19,6 +20,7 @@ pub mod zone_verifier;
 
 pub use account_keychain::*;
 pub use address_registry::*;
+pub use bankd::*;
 pub use common_errors::*;
 pub use current_committee::*;
 pub use nonce::*;
@@ -81,4 +83,9 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (CURRENT_COMMITTEE_ADDRESS, TempoHardfork::T8),
     (ZONE_FACTORY_ADDRESS, TempoHardfork::T10),
     (ZONE_VERIFIER_ADDRESS, TempoHardfork::T13),
+    // bankd modules, live from genesis.
+    (AUTHORITY_ADDRESS, TempoHardfork::Genesis),
+    (NATIVE_ADDRESS, TempoHardfork::Genesis),
+    (COMPLIANCE_ADDRESS, TempoHardfork::Genesis),
+    (BANK_SEND_ADDRESS, TempoHardfork::Genesis),
 ];

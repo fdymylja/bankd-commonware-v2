@@ -132,6 +132,11 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         Ok(())
     }
 
+    fn set_balance(&mut self, address: Address, balance: U256) -> Result<(), TempoPrecompileError> {
+        self.accounts.entry(address).or_default().balance = balance;
+        Ok(())
+    }
+
     fn account_code(&mut self, address: Address) -> Result<(B256, Bytecode), TempoPrecompileError> {
         let Some(account) = self.accounts.get(&address) else {
             return Ok((B256::ZERO, Bytecode::default()));

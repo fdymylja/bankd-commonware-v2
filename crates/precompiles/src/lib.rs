@@ -14,6 +14,7 @@ pub(crate) mod ip_validation;
 
 pub mod account_keychain;
 pub mod address_registry;
+pub mod bankd;
 pub mod current_committee;
 pub mod nonce;
 pub mod receive_policy_guard;
@@ -36,6 +37,7 @@ pub mod test_util;
 use crate::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
+    bankd::{Authority, BankSend, Compliance, Native},
     current_committee::CurrentCommittee,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
@@ -69,8 +71,9 @@ use revm::{
 };
 
 pub use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, AUTHORITY_ADDRESS, BANK_SEND_ADDRESS,
+    COMPLIANCE_ADDRESS, CURRENT_COMMITTEE_ADDRESS, DEFAULT_FEE_TOKEN, NATIVE_ADDRESS,
+    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
     SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
     SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
     TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
@@ -257,6 +260,15 @@ pub fn extend_tempo_precompiles(
             Some(ZoneFactory::create_precompile(&env))
         } else if *address == ZONE_VERIFIER_ADDRESS && env.cfg.spec.is_t13() {
             Some(ZoneVerifier::create_precompile(&env))
+        // bankd modules, active from genesis
+        } else if *address == AUTHORITY_ADDRESS {
+            Some(Authority::create_precompile(&env))
+        } else if *address == NATIVE_ADDRESS {
+            Some(Native::create_precompile(&env))
+        } else if *address == COMPLIANCE_ADDRESS {
+            Some(Compliance::create_precompile(&env))
+        } else if *address == BANK_SEND_ADDRESS {
+            Some(BankSend::create_precompile(&env))
         } else {
             None
         }
@@ -395,6 +407,34 @@ impl ValidatorConfigV2 {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("ValidatorConfigV2", env: env, |input| { Self::new() })
+    }
+}
+
+impl Authority {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("Authority", env: env, |input| { Self::new() })
+    }
+}
+
+impl Native {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("Native", env: env, |input| { Self::new() })
+    }
+}
+
+impl Compliance {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("Compliance", env: env, |input| { Self::new() })
+    }
+}
+
+impl BankSend {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("BankSend", env: env, |input| { Self::new() })
     }
 }
 

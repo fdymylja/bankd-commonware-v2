@@ -54,6 +54,7 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
+    bankd::{Authority, BankSend, Compliance, Native, native::INative},
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
@@ -141,6 +142,11 @@ pub(crate) struct GenesisArgs {
     /// Must match the number of validators if provided.
     #[arg(long, value_delimiter = ',')]
     validator_addresses: Vec<Address>,
+
+    /// bankd: addresses allowed to mint/burn native BRL from genesis (e.g. the ICS20 native
+    /// adapter on spoke chains).
+    #[arg(long, value_delimiter = ',')]
+    native_minters: Vec<Address>,
 
     /// Disable creating Alpha/Beta/ThetaUSD tokens.
     #[arg(long)]
@@ -480,6 +486,9 @@ impl GenesisArgs {
 
         println!("Initializing account keychain");
         initialize_account_keychain(&mut evm)?;
+
+        println!("Initializing bankd modules (authority owner: {validator_admin})");
+        initialize_bankd_modules(validator_admin, &self.native_minters, &mut evm)?;
 
         println!("Initializing TIP20 registry");
         initialize_address_registry(&mut evm)?;
@@ -1037,6 +1046,41 @@ fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
         &ctx.tx,
         StorageActions::disabled(),
         || NonceManager::new().initialize(),
+    )?;
+
+    Ok(())
+}
+
+/// Initializes the bankd precompiles. `owner` becomes the Authority owner every admin call
+/// checks against.
+fn initialize_bankd_modules(
+    owner: Address,
+    minters: &[Address],
+    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        StorageActions::disabled(),
+        || -> tempo_precompiles::Result<()> {
+            Authority::new().initialize(owner)?;
+            let mut native = Native::new();
+            native.initialize()?;
+            for &minter in minters {
+                native.set_minter(
+                    owner,
+                    INative::setMinterCall {
+                        minter,
+                        allowed: true,
+                    },
+                )?;
+            }
+            Compliance::new().initialize()?;
+            BankSend::new().initialize()
+        },
     )?;
 
     Ok(())

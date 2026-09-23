@@ -16,6 +16,9 @@ use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoBlockEnv;
 
+/// Gas charged per native balance write from a bankd precompile (roughly a warm SSTORE reset).
+pub const BANKD_SET_BALANCE_GAS: u64 = 5_000;
+
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
 ///
 /// Wraps `EvmInternals` and tracks gas consumption for storage operations.
@@ -382,6 +385,19 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
         self.with_loaded_account(address, |_, info| f(info))
+    }
+
+    #[inline]
+    fn set_balance(&mut self, address: Address, balance: U256) -> Result<(), TempoPrecompileError> {
+        if self.is_static {
+            return Err(TempoPrecompileError::Fatal(
+                "set_balance in static context".to_string(),
+            ));
+        }
+        // bankd: flat write cost on top of the account load callers already paid for.
+        self.deduct_gas(BANKD_SET_BALANCE_GAS)?;
+        self.internals.set_balance(address, balance)?;
+        Ok(())
     }
 
     #[inline]
@@ -1571,5 +1587,44 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    // bankd: native balance writes must land in the journal so frame reverts undo them.
+    #[test]
+    fn test_set_balance_is_journaled() -> eyre::Result<()> {
+        let mut evm = TestEvm::default();
+        let account = Address::random();
+        let mut provider = evm.provider_max_gas();
+
+        provider.set_balance(account, U256::from(10))?;
+        let cp = provider.checkpoint();
+        provider.set_balance(account, U256::from(99))?;
+        provider.checkpoint_revert(cp);
+
+        let mut balance = U256::ZERO;
+        provider.with_account_info(account, &mut |info| balance = info.balance)?;
+        assert_eq!(balance, U256::from(10));
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_balance_rejected_when_static() {
+        let mut evm = TestEvm::default();
+        let ctx = evm.0.ctx_mut();
+        let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider = EvmPrecompileStorageProvider::new(
+            internals,
+            u64::MAX,
+            0,
+            ctx.cfg.spec,
+            false,
+            true,
+            ctx.cfg.gas_params.clone(),
+        );
+        assert!(
+            provider
+                .set_balance(Address::random(), U256::from(1))
+                .is_err()
+        );
     }
 }

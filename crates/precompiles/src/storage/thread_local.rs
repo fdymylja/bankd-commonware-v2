@@ -116,6 +116,16 @@ impl StorageCtx {
         result.unwrap()
     }
 
+    /// Returns the native balance of `address`.
+    pub fn balance(&self, address: Address) -> Result<U256> {
+        self.with_account_info(address, |info| Ok(info.balance))
+    }
+
+    /// Sets the native balance of `address`.
+    pub fn set_balance(&mut self, address: Address, balance: U256) -> Result<()> {
+        Self::try_with_storage(|s| s.set_balance(address, balance))
+    }
+
     /// Returns `EXTCODEHASH(address)` and the account's runtime bytecode.
     pub fn account_code(&self, address: Address) -> Result<(B256, Bytecode)> {
         Self::try_with_storage(|s| s.account_code(address))

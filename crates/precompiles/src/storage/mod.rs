@@ -63,6 +63,14 @@ pub trait PrecompileStorageProvider {
     /// Returns `EXTCODEHASH(address)` and the account's runtime bytecode.
     fn account_code(&mut self, address: Address) -> Result<(B256, Bytecode)>;
 
+    /// Sets the native balance of `address`. Used by bankd precompiles to mint, burn and move
+    /// native BRL. Providers that can't write balances (read-only, overlays) fail closed.
+    fn set_balance(&mut self, _address: Address, _balance: U256) -> Result<()> {
+        Err(TempoPrecompileError::Fatal(
+            "set_balance not supported by this storage provider".to_string(),
+        ))
+    }
+
     /// Copies deployed runtime bytecode between accounts.
     ///
     /// Returns `None` when the source account's runtime bytecode is empty.
