@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# bankd localnet: N validators as native processes on 127.0.0.1.
+#
+#   localnet.sh up   [chain_id] [rpc_port] [consensus_port] [validators] [epoch_length]
+#   localnet.sh down [chain_id]
+#
+# Validator i gets http+ws on rpc_port+i and consensus/p2p ports from consensus_port+10*i.
+# Data and logs live in $BANKD_LOCALNET_DIR/<chain_id> (default target/bankd-localnet).
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+BASE_DIR="${BANKD_LOCALNET_DIR:-$ROOT/target/bankd-localnet}"
+TEMPO_BIN="${TEMPO_BIN:-$ROOT/target/debug/tempo}"
+XTASK_BIN="${XTASK_BIN:-$ROOT/target/debug/tempo-xtask}"
+SECRET="tempo-localnet-signing-key-secret"
+
+cmd="${1:-}"
+CHAIN_ID="${2:-9001}"
+RPC_PORT="${3:-8545}"
+CONSENSUS_PORT="${4:-9000}"
+VALIDATORS="${5:-4}"
+EPOCH_LENGTH="${6:-600}"
+DIR="$BASE_DIR/$CHAIN_ID"
+
+down() {
+  if [[ -d "$DIR" ]]; then
+    for pidf in "$DIR"/*/node.pid; do
+      [[ -f "$pidf" ]] || continue
+      kill "$(cat "$pidf")" 2>/dev/null || true
+    done
+    sleep 2
+    for pidf in "$DIR"/*/node.pid; do
+      [[ -f "$pidf" ]] || continue
+      kill -9 "$(cat "$pidf")" 2>/dev/null || true
+    done
+    rm -rf "$DIR"
+    echo "chain $CHAIN_ID stopped, $DIR removed"
+  else
+    echo "chain $CHAIN_ID: nothing to stop"
+  fi
+}
+
+up() {
+  if [[ -d "$DIR" ]]; then
+    echo "chain $CHAIN_ID already has state at $DIR, run down first" >&2
+    exit 1
+  fi
+  if [[ ! -x "$TEMPO_BIN" || ! -x "$XTASK_BIN" ]]; then
+    echo "building tempo + xtask (debug)"
+    (cd "$ROOT" && cargo build --bin tempo --bin tempo-xtask)
+  fi
+
+  local peers=()
+  for ((i = 0; i < VALIDATORS; i++)); do
+    peers+=("127.0.0.1:$((CONSENSUS_PORT + 10 * i))")
+  done
+  local validators_csv
+  validators_csv="$(IFS=,; echo "${peers[*]}")"
+
+  mkdir -p "$BASE_DIR"
+  # Seed ties validator keys to the chain id so reruns are reproducible.
+  "$XTASK_BIN" generate-localnet --output "$DIR" --force \
+    --chain-id "$CHAIN_ID" --epoch-length "$EPOCH_LENGTH" --accounts 10 \
+    --seed "$CHAIN_ID" --validators "$validators_csv" \
+    --no-extra-tokens --no-pairwise-liquidity >"$DIR.gen.log" 2>&1 \
+    || { cat "$DIR.gen.log" >&2; exit 1; }
+  mv "$DIR.gen.log" "$DIR/generate.log"
+  printf '%s\n' "$SECRET" >"$DIR/consensus.secret"
+
+  local trusted=()
+  for addr in "${peers[@]}"; do
+    local port="${addr##*:}"
+    trusted+=("enode://$(cat "$DIR/$addr/enode.identity")@127.0.0.1:$((port + 1))")
+  done
+  local trusted_csv
+  trusted_csv="$(IFS=,; echo "${trusted[*]}")"
+
+  for ((i = 0; i < VALIDATORS; i++)); do
+    local addr="${peers[$i]}"
+    local port="${addr##*:}"
+    local node_dir="$DIR/$addr"
+    local rpc=$((RPC_PORT + i))
+    "$TEMPO_BIN" node \
+      --chain "$DIR/genesis.json" \
+      --datadir "$node_dir" \
+      --http --http.addr 127.0.0.1 --http.port "$rpc" --http.api all \
+      --ws --ws.addr 127.0.0.1 --ws.port "$rpc" --ws.api all \
+      --ipcdisable \
+      --consensus.signing-key "$node_dir/signing.key" \
+      --consensus.secret "$DIR/consensus.secret" \
+      --consensus.signing-share "$node_dir/signing.share" \
+      --consensus.listen-address "$addr" \
+      --consensus.metrics-address "127.0.0.1:$((port + 2))" \
+      --consensus.use-local-defaults \
+      --consensus.bypass-ip-check \
+      --trusted-peers "$trusted_csv" \
+      --port "$((port + 1))" \
+      --discovery.port "$((port + 1))" \
+      --discovery.v5.port "$((port + 4))" \
+      --p2p-secret-key "$node_dir/enode.key" \
+      --authrpc.port "$((port + 3))" \
+      --log.file.directory "$node_dir/logs" --color never \
+      >"$node_dir/node.log" 2>&1 &
+    echo $! >"$node_dir/node.pid"
+    echo "validator $i: rpc http/ws 127.0.0.1:$rpc  log $node_dir/node.log"
+  done
+
+  echo "waiting for chain $CHAIN_ID to finalize blocks..."
+  for _ in $(seq 1 90); do
+    local head
+    head="$(curl -s -X POST -H 'content-type: application/json' \
+      --data '{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["finalized",false]}' \
+      "http://127.0.0.1:$RPC_PORT" 2>/dev/null | sed -n 's/.*"number":"\(0x[0-9a-f]*\)".*/\1/p' || true)"
+    if [[ -n "$head" && "$head" != "0x0" ]]; then
+      echo "chain $CHAIN_ID up, finalized block $((head))"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "chain $CHAIN_ID did not finalize a block in time, check logs in $DIR" >&2
+  exit 1
+}
+
+case "$cmd" in
+  up) up ;;
+  down) down ;;
+  *) echo "usage: $0 up|down [chain_id] [rpc_port] [consensus_port] [validators] [epoch_length]" >&2; exit 2 ;;
+esac
