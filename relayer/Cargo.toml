@@ -36,3 +36,7 @@ alloy = { version = "2.4.2", features = ["provider-ws", "pubsub", "rpc-types", "
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread", "time"] }
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
+# 08-wasm client types, so the JSON the client decodes and what we send can't drift.
+cw-commonware = { path = "../light-clients/cw-commonware", features = ["library"] }
+prost = "0.13"
+base64 = "0.22"

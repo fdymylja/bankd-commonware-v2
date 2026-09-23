@@ -17,7 +17,9 @@ import { INative, NATIVE_PRECOMPILE } from "./INative.sol";
 /// @title ICS20NativeAdapter
 /// @notice ICS20 (IBC v2) app that moves native BRL between bankd chains with no vouchers.
 /// @dev Uses the stock ICS20 wire format (ics20-1, solidity-abi FungibleTokenPacketData) with denom "brl".
-/// - Hub (central bank): escrows msg.value per client on send, releases on receive-back.
+/// - Hub (central bank): escrows msg.value per client on send, releases on receive-back. Returns
+///   come as "brl" from bankd spokes, or as the "transfer/{client}/brl" voucher trace from stock
+///   ICS20 chains (e.g. a Cosmos hub).
 /// - Spoke: burns msg.value on send, mints through the Native precompile on receive, but only for
 ///   packets arriving on an allow-listed local client (the one tracking the hub).
 /// Invariant: a spoke's bridged supply equals the hub's escrow for that spoke's client.
@@ -118,8 +120,16 @@ contract ICS20NativeAdapter is IIBCApp, Ownable {
         address receiver = ICS20Lib.mustHexStringToAddress(data.receiver);
 
         if (MODE == Mode.Hub) {
+            // The prefix must name the sending chain's own client, so a voucher can only unwind
+            // over the client it left on. _release caps it at that client's escrow either way.
+            bytes32 d = keccak256(bytes(data.denom));
+            require(
+                d == DENOM_HASH || d == keccak256(abi.encodePacked("transfer/", msg_.sourceClient, "/", DENOM)),
+                InvalidDenom(data.denom)
+            );
             _release(msg_.destinationClient, receiver, data.amount);
         } else {
+            require(keccak256(bytes(data.denom)) == DENOM_HASH, InvalidDenom(data.denom));
             require(trustedClients[msg_.destinationClient], UntrustedClient(msg_.destinationClient));
             _native(abi.encodeCall(INative.mint, (receiver, data.amount)));
         }
@@ -145,6 +155,8 @@ contract ICS20NativeAdapter is IIBCApp, Ownable {
     /// @dev Undo a failed send: hub releases its own escrow, spoke re-mints what it burned.
     function _refund(string calldata clientId, uint64 sequence, IICS26RouterMsgs.Payload calldata payload) private {
         IICS20TransferMsgs.FungibleTokenPacketData memory data = _decode(payload);
+        // We only ever send bare "brl".
+        require(keccak256(bytes(data.denom)) == DENOM_HASH, InvalidDenom(data.denom));
         address sender = ICS20Lib.mustHexStringToAddress(data.sender);
         if (MODE == Mode.Hub) {
             _release(clientId, sender, data.amount);
@@ -179,7 +191,6 @@ contract ICS20NativeAdapter is IIBCApp, Ownable {
             InvalidPayload()
         );
         data = abi.decode(payload.value, (IICS20TransferMsgs.FungibleTokenPacketData));
-        require(keccak256(bytes(data.denom)) == DENOM_HASH, InvalidDenom(data.denom));
         require(data.amount != 0, ZeroAmount());
     }
 

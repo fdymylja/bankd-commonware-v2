@@ -190,6 +190,51 @@ contract ICS20NativeAdapterTest is Test {
         spoke.adapter.onRecvPacket(IIBCAppCallbacksShim.recv(p));
     }
 
+    function _withDenom(IICS26RouterMsgs.Packet memory p, string memory denom)
+        internal
+        pure
+        returns (IICS26RouterMsgs.Packet memory)
+    {
+        IICS20TransferMsgs.FungibleTokenPacketData memory d =
+            abi.decode(p.payloads[0].value, (IICS20TransferMsgs.FungibleTokenPacketData));
+        d.denom = denom;
+        p.payloads[0].value = abi.encode(d);
+        return p;
+    }
+
+    function test_HubReleasesIcs20VoucherTrace() public {
+        _hubToSpoke(5 ether);
+
+        // A stock ICS20 chain returns the voucher with its own client in the trace.
+        address carol = makeAddr("carol");
+        IICS26RouterMsgs.Packet memory p = _packet(spokeClient, hubClient, 1, bob, carol, 2 ether);
+        _recv(hub, _withDenom(p, string.concat("transfer/", spokeClient, "/brl")));
+
+        assertEq(carol.balance, 2 ether);
+        assertEq(hub.adapter.escrowed(hubClient), 3 ether);
+    }
+
+    function test_HubRejectsVoucherTraceOfOtherClient() public {
+        _hubToSpoke(5 ether);
+
+        address carol = makeAddr("carol");
+        IICS26RouterMsgs.Packet memory p = _packet(spokeClient, hubClient, 1, bob, carol, 2 ether);
+        p = _withDenom(p, "transfer/client-9/brl");
+        _recv(hub, p);
+
+        assertEq(carol.balance, 0);
+        assertEq(hub.adapter.escrowed(hubClient), 5 ether);
+        bytes[] memory acks = new bytes[](1);
+        acks[0] = ICS24Host.UNIVERSAL_ERROR_ACK;
+        assertEq(_ackCommitment(hub, p), ICS24Host.packetAcknowledgementCommitmentBytes32(acks));
+    }
+
+    function test_SpokeRejectsVoucherTrace() public {
+        IICS26RouterMsgs.Packet memory p = _packet(hubClient, spokeClient, 1, alice, bob, 1 ether);
+        _recv(spoke, _withDenom(p, string.concat("transfer/", hubClient, "/brl")));
+        assertEq(bob.balance, 0);
+    }
+
     function test_RejectsWrongDenom() public {
         IICS26RouterMsgs.Packet memory p = _packet(hubClient, spokeClient, 1, alice, bob, 1 ether);
         IICS20TransferMsgs.FungibleTokenPacketData memory d =

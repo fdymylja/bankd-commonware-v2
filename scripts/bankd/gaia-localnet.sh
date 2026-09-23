@@ -2,6 +2,7 @@
 # Local 1-validator gaia for IBC v2 against bankd.
 #
 #   gaia-localnet.sh up      starts gaiad and stores the 08-wasm light client via gov
+#   gaia-localnet.sh store <wasm>    stores another 08-wasm client (.wasm or .wasm.gz) via gov
 #   gaia-localnet.sh down
 #
 # env: GAIA_CHAIN_ID (localgaia-1), GAIA_RPC_PORT (26657), GAIA_GRPC_PORT (9090),
@@ -104,9 +105,21 @@ up() {
   done
   [[ "${h:-0}" -ge 2 ]] || { echo "gaia didn't produce blocks, see $HOME_DIR/node.log" >&2; exit 1; }
 
-  echo "storing wasm light client via gov ($(basename "$WASM_CLIENT"))"
+  store "$WASM_CLIENT"
+  echo "gaia $CHAIN_ID up: rpc 127.0.0.1:$RPC_PORT grpc 127.0.0.1:$GRPC_PORT, relayer key $addr"
+}
+
+# Stores a wasm light client (.wasm or .wasm.gz) through a gov proposal and votes it through.
+# The checksum lands in $HOME_DIR/wasm-checksum.
+store() {
+  local wasm="$1"
+  if [[ "$wasm" != *.gz ]]; then
+    gzip -9 -c "$wasm" >"$HOME_DIR/$(basename "$wasm").gz"
+    wasm="$HOME_DIR/$(basename "$wasm").gz"
+  fi
+  echo "storing wasm light client via gov ($(basename "$wasm"))"
   local res
-  res="$(tx ibc-wasm store-code "$WASM_CLIENT" --title "wasm client" --summary "bankd client" --deposit "1$DENOM")"
+  res="$(tx ibc-wasm store-code "$wasm" --title "wasm client" --summary "bankd client" --deposit "1$DENOM")"
   wait_tx "$res"
   local pid
   pid="$(g q gov proposals --node "tcp://127.0.0.1:$RPC_PORT" -o json | jq -r '.proposals[-1].id')"
@@ -121,15 +134,18 @@ up() {
   done
   [[ "$status" == PROPOSAL_STATUS_PASSED ]] || { echo "proposal $pid still $status" >&2; exit 1; }
 
+  # The checksum is sha256 of the unzipped wasm. The chain lists them unordered, so just check ours is there.
   local checksum
-  checksum="$(g q ibc-wasm checksums --node "tcp://127.0.0.1:$RPC_PORT" -o json | jq -r '.checksums[-1]')"
+  checksum="$(gunzip -c "$wasm" | shasum -a 256 | cut -d' ' -f1)"
+  g q ibc-wasm checksums --node "tcp://127.0.0.1:$RPC_PORT" -o json | jq -e --arg c "$checksum" '.checksums | index($c)' >/dev/null \
+    || { echo "checksum $checksum not stored" >&2; exit 1; }
   echo "$checksum" >"$HOME_DIR/wasm-checksum"
-  echo "gaia $CHAIN_ID up: rpc 127.0.0.1:$RPC_PORT grpc 127.0.0.1:$GRPC_PORT, relayer key $addr"
   echo "wasm client checksum $checksum"
 }
 
 case "${1:-}" in
   up) up ;;
+  store) store "${2:?wasm file}" ;;
   down) down ;;
-  *) echo "usage: $0 up|down" >&2; exit 1 ;;
+  *) echo "usage: $0 up|down|store <wasm>" >&2; exit 1 ;;
 esac

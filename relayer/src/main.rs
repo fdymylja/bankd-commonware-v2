@@ -19,9 +19,12 @@
 //!   bankd-relayer                       run, config from env (see `main`)
 //!   bankd-relayer lc-init <http_rpc> <epoch_length>
 //!                                       print the trusted epoch + group key to deploy a light client with
+//!   bankd-relayer gaia-create-client | gaia-relay <tx>
+//!                                       bankd -> Cosmos txs, see gaia.rs
 
 mod abi;
 mod cert;
+mod gaia;
 
 use std::{sync::Arc, time::Duration};
 
@@ -438,6 +441,13 @@ async fn main() -> eyre::Result<()> {
         let rpc = args.get(2).ok_or_else(|| eyre!("rpc url"))?;
         let len = args.get(3).ok_or_else(|| eyre!("epoch length"))?.parse()?;
         return lc_init(rpc, len).await;
+    }
+    match args.get(1).map(String::as_str) {
+        Some("gaia-create-client") => return gaia::create_client().await,
+        Some("gaia-relay") => {
+            return gaia::relay(args.get(2).ok_or_else(|| eyre!("bankd tx hash"))?).await;
+        }
+        _ => {}
     }
 
     let a = Chain::connect("A").await?;

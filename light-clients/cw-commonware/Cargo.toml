@@ -1,0 +1,39 @@
+[package]
+name = "cw-commonware"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+rust-version = "1.86"
+description = "08-wasm light client for bankd (tempo + commonware simplex BLS12-381 threshold finality)"
+
+# Standalone workspace, like relayer/. CosmWasm pins an older toolchain for the wasm build.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Leaves out the entry points, for crates (the relayer) that only want the types.
+library = []
+
+[dependencies]
+# cosmwasm_2_1 gives the BLS12-381 host functions. Gaia's 08-wasm VM runs wasmd's BuiltInCapabilities.
+cosmwasm-std = { version = "2.2", features = ["cosmwasm_2_1"] }
+alloy-primitives = { version = "1.5", default-features = false, features = ["serde"] }
+alloy-rlp = { version = "0.3", default-features = false }
+alloy-trie = { version = "0.9", default-features = false }
+prost = { version = "0.13", default-features = false, features = ["derive", "std"] }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
+thiserror = { version = "2.0", default-features = false }
+
+[dev-dependencies]
+hex = "0.4"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
