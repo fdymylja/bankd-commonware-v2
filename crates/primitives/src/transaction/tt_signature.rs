@@ -51,6 +51,7 @@ pub const SIGNATURE_TYPE_P256: u8 = 0x01;
 pub const SIGNATURE_TYPE_WEBAUTHN: u8 = 0x02;
 pub const SIGNATURE_TYPE_KEYCHAIN: u8 = 0x03;
 pub const SIGNATURE_TYPE_KEYCHAIN_V2: u8 = 0x04;
+pub const SIGNATURE_TYPE_COSMOS_SECP256K1: u8 = 0x05;
 
 // Minimum authenticatorData is 37 bytes (32 rpIdHash + 1 flags + 4 signCount)
 const MIN_AUTH_DATA_LEN: usize = 37;
@@ -134,6 +135,17 @@ pub enum PrimitiveSignature {
 
     /// WebAuthn signature with variable-length authenticator data
     WebAuthn(WebAuthnSignature),
+
+    /// secp256k1 ECDSA signature (65 bytes) whose signer is the Cosmos style address
+    /// `ripemd160(sha256(compressed_pubkey))` instead of the keccak based address.
+    CosmosSecp256k1(Signature),
+}
+
+/// Cosmos style address of a secp256k1 public key.
+pub fn derive_cosmos_address(pubkey: &k256::ecdsa::VerifyingKey) -> Address {
+    use ripemd::Ripemd160;
+    let compressed = pubkey.to_encoded_point(true);
+    Address::from_slice(&Ripemd160::digest(Sha256::digest(compressed.as_bytes())))
 }
 
 impl PrimitiveSignature {
@@ -199,6 +211,12 @@ impl PrimitiveSignature {
                 }))
             }
 
+            SIGNATURE_TYPE_COSMOS_SECP256K1 => {
+                let sig = Signature::try_from(sig_data)
+                    .map_err(|_| "Failed to parse cosmos secp256k1 signature")?;
+                Ok(Self::CosmosSecp256k1(sig))
+            }
+
             _ => Err("Unknown signature type identifier"),
         }
     }
@@ -222,6 +240,10 @@ impl PrimitiveSignature {
                 // Backward compatibility: no type identifier for secp256k1
                 let sig_bytes: [u8; SECP256K1_SIGNATURE_LENGTH] = sig.as_bytes();
                 out.put_slice(&sig_bytes);
+            }
+            Self::CosmosSecp256k1(sig) => {
+                out.put_u8(SIGNATURE_TYPE_COSMOS_SECP256K1);
+                out.put_slice(&sig.as_bytes());
             }
             Self::P256(p256_sig) => {
                 out.put_u8(SIGNATURE_TYPE_P256);
@@ -250,6 +272,7 @@ impl PrimitiveSignature {
     pub fn encoded_length(&self) -> usize {
         match self {
             Self::Secp256k1(_) => SECP256K1_SIGNATURE_LENGTH,
+            Self::CosmosSecp256k1(_) => 1 + SECP256K1_SIGNATURE_LENGTH,
             Self::P256(_) => 1 + P256_SIGNATURE_LENGTH,
             Self::WebAuthn(webauthn_sig) => 1 + webauthn_sig.webauthn_data.len() + 128,
         }
@@ -258,7 +281,8 @@ impl PrimitiveSignature {
     /// Get signature type
     pub fn signature_type(&self) -> SignatureType {
         match self {
-            Self::Secp256k1(_) => SignatureType::Secp256k1,
+            // Same curve, only the address derivation differs.
+            Self::Secp256k1(_) | Self::CosmosSecp256k1(_) => SignatureType::Secp256k1,
             Self::P256(_) => SignatureType::P256,
             Self::WebAuthn(_) => SignatureType::WebAuthn,
         }
@@ -268,7 +292,7 @@ impl PrimitiveSignature {
     pub fn size(&self) -> usize {
         size_of::<Self>()
             + match self {
-                Self::Secp256k1(_) | Self::P256(_) => 0,
+                Self::Secp256k1(_) | Self::CosmosSecp256k1(_) | Self::P256(_) => 0,
                 Self::WebAuthn(webauthn_sig) => webauthn_sig.webauthn_data.len(),
             }
     }
@@ -288,6 +312,12 @@ impl PrimitiveSignature {
                 // Standard secp256k1 recovery using alloy's built-in methods
                 // This simultaneously verifies the signature AND recovers the address
                 alloy_consensus::crypto::secp256k1::recover_signer(sig, *sig_hash)
+            }
+            Self::CosmosSecp256k1(sig) => {
+                let pubkey = sig
+                    .recover_from_prehash(sig_hash)
+                    .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
+                Ok(derive_cosmos_address(&pubkey))
             }
             Self::P256(p256_sig) => {
                 // Prepare message hash for verification
@@ -1761,6 +1791,26 @@ mod tests {
             verify_webauthn_data_internal(&data, &tx_hash).is_ok(),
             "Should accept valid webauthn data with only UP flag"
         );
+    }
+
+    #[test]
+    fn test_cosmos_secp256k1_recover_and_codec() {
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+
+        let signer = PrivateKeySigner::random();
+        let hash = B256::repeat_byte(0x42);
+        let sig = signer.sign_hash_sync(&hash).unwrap();
+        let primitive = PrimitiveSignature::CosmosSecp256k1(sig);
+
+        let expected = derive_cosmos_address(signer.credential().verifying_key());
+        assert_ne!(expected, signer.address());
+        assert_eq!(primitive.recover_signer(&hash).unwrap(), expected);
+
+        let bytes = primitive.to_bytes();
+        assert_eq!(bytes.len(), primitive.encoded_length());
+        assert_eq!(bytes[0], SIGNATURE_TYPE_COSMOS_SECP256K1);
+        assert_eq!(PrimitiveSignature::from_bytes(&bytes).unwrap(), primitive);
     }
 
     #[test]

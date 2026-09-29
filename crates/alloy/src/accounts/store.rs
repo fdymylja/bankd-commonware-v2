@@ -2492,6 +2492,11 @@ fn writable_signature(
     signature: &PrimitiveSignature,
 ) -> Result<WritablePrimitiveSignature, TempoAccountsError> {
     Ok(match signature {
+        PrimitiveSignature::CosmosSecp256k1(_) => {
+            return Err(TempoAccountsError::InvalidAuthorization(
+                "cosmos secp256k1 authorizations are not supported",
+            ));
+        }
         PrimitiveSignature::Secp256k1(signature) => WritablePrimitiveSignature::Secp256k1 {
             signature: WritableSecpSignature {
                 r: writable_bigint(signature.r()),

@@ -18,6 +18,7 @@ workspace = true
 [dependencies]
 tempo-chainspec = { workspace = true, features = ["default"] }
 tempo-contracts.workspace = true
+tempo-cosmos-address.workspace = true
 tempo-primitives = { workspace = true, features = ["reth-codec"] }
 tempo-consensus-config.workspace = true
 tempo-validator-config.workspace = true

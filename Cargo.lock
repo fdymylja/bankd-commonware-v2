@@ -2502,6 +2502,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d86b93f97252c47b41663388e6d155714a9d0c398b99f1005cbc5f978b29f445"
 
 [[package]]
+name = "bech32"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32637268377fc7b10a8c6d51de3e7fba1ce5dd371a96e342b34e6078db558e7f"
+
+[[package]]
 name = "bimap"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15493,6 +15499,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempo-chainspec",
  "tempo-contracts",
+ "tempo-cosmos-address",
  "tempo-evm",
  "tempo-primitives",
  "tempo-revm",
@@ -15624,6 +15631,20 @@ dependencies = [
  "serde",
  "tempo-hardfork",
  "tokio",
+]
+
+[[package]]
+name = "tempo-cosmos-address"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "bech32 0.11.1",
+ "coins-bip32",
+ "coins-bip39",
+ "rand 0.8.6",
+ "ripemd 0.1.3",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -16019,6 +16040,7 @@ dependencies = [
  "base64 0.22.1",
  "commonware-cryptography",
  "derive_more 2.1.1",
+ "k256",
  "modular-bitfield",
  "once_cell",
  "p256 0.13.2",
@@ -16031,6 +16053,7 @@ dependencies = [
  "reth-primitives-traits",
  "reth-rpc-convert",
  "revm",
+ "ripemd 0.1.3",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -16198,6 +16221,7 @@ dependencies = [
  "tempo-chainspec",
  "tempo-consensus-config",
  "tempo-contracts",
+ "tempo-cosmos-address",
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
  "tempo-precompiles",

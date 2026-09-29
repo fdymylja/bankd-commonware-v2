@@ -6,9 +6,11 @@
 //! access-key metadata needed for gas estimation, and signs through Alloy's
 //! standard wallet interfaces.
 
+mod cosmos;
 mod p256;
 mod store;
 
+pub use cosmos::CosmosSigner;
 pub use store::{
     TempoAccessKey, TempoAccountsError, TempoAccountsKeyAuthorization, TempoAccountsStore,
     TempoAccountsWallet, TempoAuthorizationReservation, TempoStoredAccessKey,

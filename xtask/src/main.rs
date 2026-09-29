@@ -2,7 +2,7 @@
 use std::net::SocketAddr;
 
 use crate::{
-    bootstrap_shadowfork::BootstrapShadowfork, check_abi::CheckAbi,
+    bootstrap_shadowfork::BootstrapShadowfork, check_abi::CheckAbi, cosmos_key::CosmosKey,
     generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
     generate_hardfork::AddHardfork, generate_localnet::GenerateLocalnet,
     generate_shadowfork::GenerateShadowfork, generate_state_bloat::GenerateStateBloat,
@@ -17,6 +17,7 @@ use eyre::Context;
 mod bankd_ibc;
 mod bootstrap_shadowfork;
 mod check_abi;
+mod cosmos_key;
 mod generate_devnet;
 mod generate_genesis;
 mod generate_hardfork;
@@ -33,6 +34,7 @@ async fn main() -> eyre::Result<()> {
     let args = Args::parse();
     match args.action {
         Action::CheckAbi(args) => args.run().wrap_err("failed ABI alignment check"),
+        Action::CosmosKey(args) => args.run(),
         Action::GetDkgOutcome(args) => args.run().await.wrap_err("failed to get DKG outcome"),
         Action::GetIdentityTransitions(args) => args
             .run()
@@ -76,6 +78,7 @@ struct Args {
 #[derive(Debug, clap::Subcommand)]
 enum Action {
     CheckAbi(CheckAbi),
+    CosmosKey(CosmosKey),
     GetDkgOutcome(GetDkgOutcome),
     GetIdentityTransitions(GetIdentityTransitions),
     GenerateGenesis(GenerateGenesis),

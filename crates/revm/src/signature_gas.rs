@@ -21,7 +21,7 @@ const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
 #[inline]
 pub(crate) fn primitive_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
     match signature {
-        PrimitiveSignature::Secp256k1(_) => 0,
+        PrimitiveSignature::Secp256k1(_) | PrimitiveSignature::CosmosSecp256k1(_) => 0,
         PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
         PrimitiveSignature::WebAuthn(webauthn_sig) => {
             let tokens = get_tokens_in_calldata_istanbul(&webauthn_sig.webauthn_data);
