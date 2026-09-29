@@ -265,6 +265,10 @@ pub(crate) struct GenesisArgs {
     /// T13 hardfork activation time.
     #[arg(long, default_value = "0")]
     t13_time: u64,
+
+    /// T14 hardfork activation time (TendermintVerifier precompile).
+    #[arg(long, default_value = "0")]
+    t14_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -527,7 +531,12 @@ impl GenesisArgs {
             native_minters.push(bankd_ibc::ADAPTER);
         }
         println!("Initializing bankd modules (authority owner: {validator_admin})");
-        initialize_bankd_modules(validator_admin, &native_minters, &mut evm)?;
+        initialize_bankd_modules(
+            validator_admin,
+            &native_minters,
+            self.t14_time == 0,
+            &mut evm,
+        )?;
 
         println!("Initializing TIP20 registry");
         initialize_address_registry(&mut evm)?;
@@ -749,6 +758,9 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t13Time".to_string(), self.t13_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t14Time".to_string(), self.t14_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -1131,6 +1143,7 @@ fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
 fn initialize_bankd_modules(
     owner: Address,
     minters: &[Address],
+    t14_active: bool,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
@@ -1155,7 +1168,9 @@ fn initialize_bankd_modules(
             }
             Compliance::new().initialize()?;
             BankSend::new().initialize()?;
-            TendermintVerifier::new().initialize()?;
+            if t14_active {
+                TendermintVerifier::new().initialize()?;
+            }
             Shield::new().initialize()
         },
     )?;

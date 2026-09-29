@@ -56,7 +56,7 @@ mod tests {
     use tempo_tendermint_verifier::fixtures;
 
     fn run<T>(f: impl FnOnce(&mut TendermintVerifier) -> T) -> T {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Genesis);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
         StorageCtx::enter(&mut storage, || f(&mut TendermintVerifier::new()))
     }
 

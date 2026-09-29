@@ -91,6 +91,5 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (COMPLIANCE_ADDRESS, TempoHardfork::Genesis),
     (BANK_SEND_ADDRESS, TempoHardfork::Genesis),
     (SHIELD_ADDRESS, TempoHardfork::Genesis),
-    // Stateless verifier, live from genesis like the bankd modules.
-    (TENDERMINT_VERIFIER_ADDRESS, TempoHardfork::Genesis),
+    (TENDERMINT_VERIFIER_ADDRESS, TempoHardfork::T14),
 ];

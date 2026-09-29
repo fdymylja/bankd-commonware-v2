@@ -174,3 +174,65 @@ fn misbehaviour_bad_inputs() {
         check_misbehaviour(&p, &u.trusted, &u.trusted, &u.header, &u.header, u.now_ns).is_err()
     );
 }
+
+// Manual check of relayer output (`bankd-relayer tm-header`) against a live gaia:
+// TM_LIVE_JSON=/path/to/out.json cargo test -p tempo-tendermint-verifier live -- --ignored
+#[test]
+#[ignore]
+fn live_header_from_relayer() {
+    let path = std::env::var("TM_LIVE_JSON").expect("TM_LIVE_JSON");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let hex32 = |k: &str| -> [u8; 32] {
+        hex::decode(v[k].as_str().unwrap().trim_start_matches("0x"))
+            .unwrap()
+            .try_into()
+            .unwrap()
+    };
+    let trusted = ConsensusState {
+        timestamp_ns: v["trusted_timestamp_ns"].as_str().unwrap().parse().unwrap(),
+        root: hex32("trusted_root"),
+        next_validators_hash: hex32("trusted_next_validators_hash"),
+    };
+    let params = Params {
+        chain_id: v["chain_id"].as_str().unwrap().into(),
+        trust_numerator: 1,
+        trust_denominator: 3,
+        trusting_period_secs: 14 * 24 * 3600,
+        unbonding_period_secs: 21 * 24 * 3600,
+        max_clock_drift_secs: 15,
+    };
+    let header = hex::decode(v["header"].as_str().unwrap().trim_start_matches("0x")).unwrap();
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let out = verify_update(&params, &trusted, &header, now_ns).unwrap();
+    eprintln!("verified: {out:?}");
+}
+
+// Manual check of `bankd-relayer tm-proof` output. TM_PROOF is the tm-proof stdout file,
+// TM_KEY the store key, TM_ROOT the app hash of the header at the printed proof height,
+// TM_VALUE_HEX the expected value (empty for non-membership).
+#[test]
+#[ignore]
+fn live_proof_from_relayer() {
+    let out = std::fs::read_to_string(std::env::var("TM_PROOF").expect("TM_PROOF")).unwrap();
+    let proof = hex::decode(
+        out.split_whitespace()
+            .nth(1)
+            .unwrap()
+            .trim_start_matches("0x"),
+    )
+    .unwrap();
+    let root: [u8; 32] = hex::decode(std::env::var("TM_ROOT").expect("TM_ROOT"))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let value = hex::decode(std::env::var("TM_VALUE_HEX").unwrap_or_default()).unwrap();
+    let path = vec![
+        b"ibc".to_vec(),
+        std::env::var("TM_KEY").unwrap().into_bytes(),
+    ];
+    assert!(verify_membership(root, &proof, path, value).unwrap());
+}

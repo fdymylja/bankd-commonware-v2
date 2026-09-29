@@ -35,8 +35,9 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     IShield, InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SHIELD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
-    VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state, t13_zone_factory_state,
+    SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS, TENDERMINT_VERIFIER_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state,
+    t13_zone_factory_state,
 };
 use tempo_primitives::{
     SHIELDED_TX_GAS, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -756,6 +757,10 @@ where
                 .is_t13_active_at_timestamp(self.inner.spec.genesis().timestamp)
         {
             self.upgrade_zone_runtimes_at_boundary()?;
+        }
+
+        if self.inner.spec.is_t14_active_at_timestamp(timestamp) {
+            self.deploy_precompile_at_boundary(TENDERMINT_VERIFIER_ADDRESS, &[])?;
         }
 
         self.begin_shield_block()?;

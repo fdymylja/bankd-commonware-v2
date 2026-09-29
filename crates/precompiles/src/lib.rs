@@ -273,7 +273,7 @@ pub fn extend_tempo_precompiles(
             Some(BankSend::create_precompile(&env))
         } else if *address == SHIELD_ADDRESS {
             Some(Shield::create_precompile(&env))
-        } else if *address == TENDERMINT_VERIFIER_ADDRESS {
+        } else if *address == TENDERMINT_VERIFIER_ADDRESS && env.cfg.spec.is_t14() {
             Some(TendermintVerifier::create_precompile(&env))
         } else {
             None
@@ -1364,6 +1364,110 @@ mod tests {
         assert!(execute(TempoHardfork::T11));
         assert!(execute(TempoHardfork::T12));
         assert!(!execute(TempoHardfork::T13));
+    }
+
+    #[test]
+    fn test_tendermint_verifier_registered_at_t14_only() {
+        let activation = SYSTEM_PRECOMPILES
+            .iter()
+            .find_map(|(a, fork)| (*a == TENDERMINT_VERIFIER_ADDRESS).then_some(*fork))
+            .expect("TendermintVerifier must be listed in SYSTEM_PRECOMPILES");
+        assert_eq!(activation, TempoHardfork::T14);
+
+        for (spec, active) in [(TempoHardfork::T13, false), (TempoHardfork::T14, true)] {
+            let mut cfg = CfgEnv::<TempoHardfork>::default();
+            cfg.set_spec_and_mainnet_gas_params(spec);
+            assert_eq!(
+                test_tempo_precompiles(&cfg)
+                    .get(&TENDERMINT_VERIFIER_ADDRESS)
+                    .is_some(),
+                active,
+                "unexpected TendermintVerifier activation at {spec:?}"
+            );
+        }
+    }
+
+    /// Runs the real registered precompile through the EVM, including gas metering.
+    #[test]
+    fn test_tendermint_verifier_end_to_end_in_evm() {
+        use tempo_contracts::precompiles::ITendermintVerifier as I;
+        use tempo_tendermint_verifier::fixtures;
+
+        let u = fixtures::update();
+        let calldata = I::verifyUpdateCall {
+            params: I::Params {
+                chainId: u.params.chain_id.clone(),
+                trustNumerator: u.params.trust_numerator,
+                trustDenominator: u.params.trust_denominator,
+                trustingPeriod: u.params.trusting_period_secs,
+                unbondingPeriod: u.params.unbonding_period_secs,
+                maxClockDrift: u.params.max_clock_drift_secs,
+            },
+            trusted: I::ConsensusState {
+                timestamp: u.trusted.timestamp_ns,
+                root: u.trusted.root.into(),
+                nextValidatorsHash: u.trusted.next_validators_hash.into(),
+            },
+            header: u.header.clone().into(),
+            nowSeconds: (u.now_ns / 1_000_000_000) as u64,
+        }
+        .abi_encode();
+
+        let execute = |spec, gas_limit| {
+            let mut cfg = CfgEnv::<TempoHardfork>::default();
+            cfg.set_spec_and_mainnet_gas_params(spec);
+            let mut evm = TempoEvmFactory::default().create_evm(
+                CacheDB::new(EmptyDB::new()),
+                EvmEnv {
+                    cfg_env: cfg,
+                    block_env: TempoBlockEnv::default(),
+                },
+            );
+            evm.transact_raw(TempoTxEnv {
+                inner: TxEnv {
+                    caller: Address::repeat_byte(0x77),
+                    gas_price: 0,
+                    gas_limit,
+                    kind: TxKind::Call(TENDERMINT_VERIFIER_ADDRESS),
+                    data: calldata.clone().into(),
+                    ..Default::default()
+                },
+                is_system_tx: false,
+                ..Default::default()
+            })
+            .unwrap()
+            .result
+        };
+
+        use revm::context::result::{ExecutionResult, Output};
+        let ExecutionResult::Success {
+            output: Output::Call(out),
+            gas,
+            ..
+        } = execute(TempoHardfork::T14, 10_000_000)
+        else {
+            panic!("expected success at T14");
+        };
+        let ret = I::verifyUpdateCall::abi_decode_returns(&out).unwrap();
+        assert!(ret.newHeight.revisionHeight > ret.trustedHeight.revisionHeight);
+        assert!(
+            gas.tx_gas_used() > 100_000,
+            "verification gas must be charged, got {gas:?}"
+        );
+
+        // Not enough gas for the metered cost.
+        assert!(!matches!(
+            execute(TempoHardfork::T14, 100_000),
+            ExecutionResult::Success { .. }
+        ));
+        // Before T14 the address is a plain empty account, no verification happens.
+        match execute(TempoHardfork::T13, 10_000_000) {
+            ExecutionResult::Success {
+                output: Output::Call(out),
+                ..
+            } => assert!(out.is_empty()),
+            other => panic!("unexpected pre-T14 result: {other:?}"),
+        }
     }
 
     #[test]

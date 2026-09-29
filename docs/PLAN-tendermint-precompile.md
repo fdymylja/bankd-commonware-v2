@@ -129,3 +129,11 @@ Rough total: 4 to 6 days for something I'd trust on a testnet, more for mainnet 
 - Do we want misbehaviour in v1 of this, or add later?
 - Vendor the two functions or depend on the ibc-contracts crates directly? (License is fine, Apache-2.0.)
 - Who reviews the precompile before mainnet?
+
+## TODO (hardening, not started)
+
+- fuzz protobuf decoding + precompile calldata (header, MerkleProof, params)
+- panic audit of ibc-contracts crates (`ClientValidationCtx` indexing/unwrap), prod profile `reproducible` is panic=abort so a panic kills the node
+- benchmark worst-case headers (300+ vals) and tune gas consts in `crates/precompiles/src/tendermint_verifier/mod.rs`
+- differential test vs the SP1 guest output on the same inputs
+- outside review, this is consensus critical

@@ -21,10 +21,13 @@
 //!                                       print the trusted epoch + group key to deploy a light client with
 //!   bankd-relayer gaia-create-client | gaia-relay <tx>
 //!                                       bankd -> Cosmos txs, see gaia.rs
+//!   bankd-relayer tm-update-msg [height] | tm-proof <key> [height]
+//!                                       gaia -> bankd, see tendermint.rs
 
 mod abi;
 mod cert;
 mod gaia;
+mod tendermint;
 
 use std::{sync::Arc, time::Duration};
 
@@ -446,6 +449,25 @@ async fn main() -> eyre::Result<()> {
         Some("gaia-create-client") => return gaia::create_client().await,
         Some("gaia-relay") => {
             return gaia::relay(args.get(2).ok_or_else(|| eyre!("bankd tx hash"))?).await;
+        }
+        Some("tm-update-msg") => {
+            return tendermint::update_msg(args.get(2).map(|v| v.parse()).transpose()?).await;
+        }
+        Some("tm-header") => {
+            return tendermint::header_json(
+                args.get(2)
+                    .ok_or_else(|| eyre!("trusted height"))?
+                    .parse()?,
+                args.get(3).ok_or_else(|| eyre!("target height"))?.parse()?,
+            )
+            .await;
+        }
+        Some("tm-proof") => {
+            return tendermint::proof(
+                args.get(2).ok_or_else(|| eyre!("key hex"))?,
+                args.get(3).map(|v| v.parse()).transpose()?,
+            )
+            .await;
         }
         _ => {}
     }

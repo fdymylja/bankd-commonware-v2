@@ -40,3 +40,9 @@ serde = { version = "1", features = ["derive"] }
 cw-commonware = { path = "../light-clients/cw-commonware", features = ["library"] }
 prost = "0.13"
 base64 = "0.22"
+# gaia -> bankd, against TendermintLightClient (native tendermint-verifier precompile). No
+# ibc-primitives here, it caps `time` below what alloy needs.
+tendermint = { version = "0.40", default-features = false, features = ["std", "rust-crypto"] }
+tendermint-proto = { version = "0.40", default-features = false }
+ibc-proto = { version = "0.51", default-features = false, features = ["std"] }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
