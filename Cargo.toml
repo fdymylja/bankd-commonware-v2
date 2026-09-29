@@ -15,6 +15,8 @@ exclude = [
   "crates/nitro-attestation/fuzz",
   "crates/bankd-shield/vendor/cnidarium",
   "shieldd",
+  "crates/tendermint-verifier/vendor/ibc-primitives",
+  "contracts/lib/ibc-contracts",
 ]
 members = [
   "bin/tempo",
@@ -40,6 +42,7 @@ members = [
   "crates/payload/types",
   "crates/precompiles",
   "crates/precompiles-macros",
+  "crates/tendermint-verifier",
   "crates/primitives",
   "crates/contracts",
   "crates/telemetry-util",
@@ -136,6 +139,7 @@ aws-lc-rs = { version = "1.17.0", default-features = false, features = ["alloc",
 tempo-alloy = { path = "crates/alloy" }
 tempo-node = { path = "crates/node" }
 tempo-nitro-attestation = { path = "crates/nitro-attestation", default-features = false }
+tempo-tendermint-verifier = { path = "crates/tendermint-verifier" }
 tempo-chainspec = { path = "crates/chainspec", default-features = false }
 tempo-consensus = { path = "crates/consensus", default-features = false }
 tempo-consensus-config = { path = "crates/consensus-config", default-features = false }
@@ -431,6 +435,8 @@ vergen-git2 = "10.0.1"
 # Branch (not rev) so the git deps that also point at these branches unify;
 # Cargo.lock pins the same commits as shieldd's lock (cargo update --precise).
 [patch.crates-io]
+# ibc-primitives 0.57 caps time <0.3.38, vendored with the cap removed
+ibc-primitives = { path = "crates/tendermint-verifier/vendor/ibc-primitives" }
 cnidarium = { path = "crates/bankd-shield/vendor/cnidarium" }
 decaf377 = { git = "https://github.com/mizufinance/decaf377", branch = "main" }
 decaf377-rdsa = { git = "https://github.com/mizufinance/decaf377-rdsa", branch = "main" }

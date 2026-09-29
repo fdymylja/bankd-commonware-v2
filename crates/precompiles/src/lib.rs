@@ -21,6 +21,7 @@ pub mod receive_policy_guard;
 pub mod signature_verifier;
 pub mod stablecoin_dex;
 pub mod storage_credits;
+pub mod tendermint_verifier;
 pub mod tip20;
 pub mod tip20_channel_reserve;
 pub mod tip20_factory;
@@ -45,6 +46,7 @@ use crate::{
     stablecoin_dex::StablecoinDEX,
     storage::{StorageCtx, actions::StorageActions},
     storage_credits::{NonCreditableSlots, StorageCredits},
+    tendermint_verifier::TendermintVerifier,
     tip_fee_manager::TipFeeManager,
     tip20::TIP20Token,
     tip20_channel_reserve::TIP20ChannelReserve,
@@ -75,10 +77,10 @@ pub use tempo_contracts::precompiles::{
     COMPLIANCE_ADDRESS, CURRENT_COMMITTEE_ADDRESS, DEFAULT_FEE_TOKEN, NATIVE_ADDRESS,
     NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SHIELD_ADDRESS,
     SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
-    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
-    VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
-    ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+    SYSTEM_PRECOMPILES, TENDERMINT_VERIFIER_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
+    ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -271,6 +273,8 @@ pub fn extend_tempo_precompiles(
             Some(BankSend::create_precompile(&env))
         } else if *address == SHIELD_ADDRESS {
             Some(Shield::create_precompile(&env))
+        } else if *address == TENDERMINT_VERIFIER_ADDRESS {
+            Some(TendermintVerifier::create_precompile(&env))
         } else {
             None
         }
@@ -445,6 +449,13 @@ impl Shield {
     /// `msg.value`, since `deposit` is payable.
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("Shield", env: env, |input| { Self::new().with_value(input.value) })
+    }
+}
+
+impl TendermintVerifier {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("TendermintVerifier", env: env, |input| { Self::new() })
     }
 }
 

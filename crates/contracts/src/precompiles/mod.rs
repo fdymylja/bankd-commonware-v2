@@ -8,6 +8,7 @@ pub mod receive_policy_guard;
 pub mod signature_verifier;
 pub mod stablecoin_dex;
 pub mod storage_credits;
+pub mod tendermint_verifier;
 pub mod tip20;
 pub mod tip20_channel_reserve;
 pub mod tip20_factory;
@@ -28,6 +29,7 @@ pub use receive_policy_guard::*;
 pub use signature_verifier::*;
 pub use stablecoin_dex::*;
 pub use storage_credits::*;
+pub use tendermint_verifier::*;
 pub use tip_fee_manager::*;
 pub use tip20::*;
 pub use tip20_channel_reserve::*;
@@ -89,4 +91,6 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (COMPLIANCE_ADDRESS, TempoHardfork::Genesis),
     (BANK_SEND_ADDRESS, TempoHardfork::Genesis),
     (SHIELD_ADDRESS, TempoHardfork::Genesis),
+    // Stateless verifier, live from genesis like the bankd modules.
+    (TENDERMINT_VERIFIER_ADDRESS, TempoHardfork::Genesis),
 ];

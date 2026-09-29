@@ -61,6 +61,7 @@ use tempo_precompiles::{
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageActions, StorageCtx},
+    tendermint_verifier::TendermintVerifier,
     tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::TIP20Factory,
@@ -1154,6 +1155,7 @@ fn initialize_bankd_modules(
             }
             Compliance::new().initialize()?;
             BankSend::new().initialize()?;
+            TendermintVerifier::new().initialize()?;
             Shield::new().initialize()
         },
     )?;

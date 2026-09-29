@@ -25,8 +25,8 @@ use tempo_contracts::{
         AccountKeychainError, AddrRegistryError, BankdError, CurrentCommitteeError,
         FeeManagerError, NonceError, ReceivePolicyGuardError, RolesAuthError,
         SignatureVerifierError, StablecoinDEXError, StorageCreditsError, TIP20ChannelReserveError,
-        TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
-        ValidatorConfigError, ValidatorConfigV2Error, ZoneFactoryError,
+        TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, TendermintVerifierError,
+        UnknownFunctionSelector, ValidatorConfigError, ValidatorConfigV2Error, ZoneFactoryError,
     },
 };
 
@@ -119,6 +119,10 @@ pub enum TempoPrecompileError {
     #[error("bankd error: {0:?}")]
     BankdError(BankdError),
 
+    /// Error from the TendermintVerifier precompile
+    #[error("Tendermint verifier error: {0:?}")]
+    TendermintVerifierError(TendermintVerifierError),
+
     /// Gas limit exceeded during precompile execution.
     #[error("Gas limit exceeded")]
     OutOfGas,
@@ -185,6 +189,7 @@ impl TempoPrecompileError {
             Self::CurrentCommitteeError(e) => e.selector(),
             Self::ZoneFactoryError(e) => e.selector(),
             Self::BankdError(e) => e.selector(),
+            Self::TendermintVerifierError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
             Self::OutOfGas | Self::Fatal(_) => [0, 0, 0, 0],
@@ -218,6 +223,7 @@ impl TempoPrecompileError {
             | Self::CurrentCommitteeError(_)
             | Self::ZoneFactoryError(_)
             | Self::BankdError(_)
+            | Self::TendermintVerifierError(_)
             | Self::UnknownFunctionSelector(_) => false,
         }
     }
@@ -282,6 +288,7 @@ impl TempoPrecompileError {
             Self::CurrentCommitteeError(e) => e.abi_encode().into(),
             Self::ZoneFactoryError(e) => e.abi_encode().into(),
             Self::BankdError(e) => e.abi_encode().into(),
+            Self::TendermintVerifierError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir));
             }
@@ -361,6 +368,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::CurrentCommitteeError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ZoneFactoryError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::BankdError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::TendermintVerifierError);
 
     registry
 }

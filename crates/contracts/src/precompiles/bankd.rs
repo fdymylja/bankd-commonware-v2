@@ -17,6 +17,9 @@ pub const COMPLIANCE_ADDRESS: Address = address!("0x0000000000000000000000000000
 pub const BANK_SEND_ADDRESS: Address = address!("0x00000000000000000000000042414E4B53454E44");
 /// Shield ("SHLD"): EVM to shielded pool deposits. Its storage also holds the shieldd root.
 pub const SHIELD_ADDRESS: Address = address!("0x0000000000000000000000000000000053484C44");
+/// TendermintVerifier ("TMVER"): stateless CometBFT light client verification.
+pub const TENDERMINT_VERIFIER_ADDRESS: Address =
+    address!("0x000000000000000000000000000000544D564552");
 /// Shieldd denom for native BRL (18 decimals, atto-BRL).
 pub const SHIELD_BRL_DENOM: &str = "abrl";
 

@@ -4695,11 +4695,32 @@ dependencies = [
 
 [[package]]
 name = "derive_more"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a9b99b9cbbe49445b21764dc0625032a89b145a2642e67603e1c936f5458d05"
+dependencies = [
+ "derive_more-impl 1.0.0",
+]
+
+[[package]]
+name = "derive_more"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d751e9e49156b02b44f9c1815bcb94b984cdcc4396ecc32521c739452808b134"
 dependencies = [
- "derive_more-impl",
+ "derive_more-impl 2.1.1",
+]
+
+[[package]]
+name = "derive_more-impl"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb7330aeadfbe296029522e6c40f315320aba36fc43a5b3632f3795348f3bd22"
+dependencies = [
+ "proc-macro2 1.0.106",
+ "quote",
+ "syn 2.0.119",
+ "unicode-xid 0.2.6",
 ]
 
 [[package]]
@@ -6432,6 +6453,226 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "ibc-client-tendermint"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11225e842c5e3bf0787a36cf10d16b954dafbef357533fa2a87c7ac1bb2739f7"
+dependencies = [
+ "derive_more 1.0.0",
+ "ibc-client-tendermint-types",
+ "ibc-core-client",
+ "ibc-core-commitment-types",
+ "ibc-core-handler-types",
+ "ibc-core-host",
+ "ibc-primitives",
+ "serde",
+ "tendermint",
+ "tendermint-light-client-verifier",
+]
+
+[[package]]
+name = "ibc-client-tendermint-types"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa16efb7dc6d7b73d483e55553e6c69eeaf0b82384b464514c52fe813d3c55d2"
+dependencies = [
+ "displaydoc",
+ "ibc-core-client-types",
+ "ibc-core-commitment-types",
+ "ibc-core-host-types",
+ "ibc-primitives",
+ "ibc-proto",
+ "serde",
+ "tendermint",
+ "tendermint-light-client-verifier",
+ "tendermint-proto",
+]
+
+[[package]]
+name = "ibc-core-channel-types"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "681d986a6943683ef16fbaab8295125bf795ab4e15a1909eccb8574bb4567f10"
+dependencies = [
+ "derive_more 1.0.0",
+ "displaydoc",
+ "ibc-core-client-types",
+ "ibc-core-commitment-types",
+ "ibc-core-connection-types",
+ "ibc-core-host-types",
+ "ibc-primitives",
+ "ibc-proto",
+ "serde",
+ "sha2 0.10.9",
+ "subtle-encoding",
+ "tendermint",
+]
+
+[[package]]
+name = "ibc-core-client"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e95616bda7fa163c1ed5e96aa2a5c902d07b31fddbcd756ebaca7a004bc078e8"
+dependencies = [
+ "ibc-core-client-context",
+ "ibc-core-client-types",
+ "ibc-core-commitment-types",
+ "ibc-core-handler-types",
+ "ibc-core-host",
+ "ibc-primitives",
+]
+
+[[package]]
+name = "ibc-core-client-context"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2540ce861ac8fe7ce6ff14de043d8a3e8e239875c058f0b5baa9fe9b0a31ac94"
+dependencies = [
+ "derive_more 1.0.0",
+ "displaydoc",
+ "ibc-core-client-types",
+ "ibc-core-commitment-types",
+ "ibc-core-handler-types",
+ "ibc-core-host-types",
+ "ibc-primitives",
+ "subtle-encoding",
+ "tendermint",
+]
+
+[[package]]
+name = "ibc-core-client-types"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f741122f7504846a6099d41244687e5db3235b7ce5f651de8a552489c1f5c9a"
+dependencies = [
+ "derive_more 1.0.0",
+ "displaydoc",
+ "ibc-core-commitment-types",
+ "ibc-core-host-types",
+ "ibc-primitives",
+ "ibc-proto",
+ "serde",
+ "subtle-encoding",
+ "tendermint",
+]
+
+[[package]]
+name = "ibc-core-commitment-types"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ba35d2bde395cff6ddbf550d604c3098903e661430588995b1e5f8db1f2e1d1"
+dependencies = [
+ "derive_more 1.0.0",
+ "displaydoc",
+ "ibc-core-host-types",
+ "ibc-primitives",
+ "ibc-proto",
+ "ics23",
+ "serde",
+ "subtle-encoding",
+]
+
+[[package]]
+name = "ibc-core-connection-types"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2eed5ea03d3900f89b3b498c7f2ff83ca50c2f4f76cebc339bfa5ecb2f0ffc1"
+dependencies = [
+ "derive_more 1.0.0",
+ "displaydoc",
+ "ibc-core-client-types",
+ "ibc-core-commitment-types",
+ "ibc-core-host-types",
+ "ibc-primitives",
+ "ibc-proto",
+ "serde",
+ "subtle-encoding",
+ "tendermint",
+]
+
+[[package]]
+name = "ibc-core-handler-types"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "426cdb98d683cf8f65b1ebb7638fd4e8a35e1718aa143bcf895636ee34c68385"
+dependencies = [
+ "derive_more 1.0.0",
+ "displaydoc",
+ "ibc-core-channel-types",
+ "ibc-core-client-types",
+ "ibc-core-commitment-types",
+ "ibc-core-connection-types",
+ "ibc-core-host-types",
+ "ibc-core-router-types",
+ "ibc-primitives",
+ "ibc-proto",
+ "serde",
+ "subtle-encoding",
+ "tendermint",
+]
+
+[[package]]
+name = "ibc-core-host"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ff10f831f430b02462e71852bcbc947dde972762ee26dce1202f861003366f2"
+dependencies = [
+ "derive_more 1.0.0",
+ "displaydoc",
+ "ibc-core-channel-types",
+ "ibc-core-client-context",
+ "ibc-core-client-types",
+ "ibc-core-commitment-types",
+ "ibc-core-connection-types",
+ "ibc-core-handler-types",
+ "ibc-core-host-types",
+ "ibc-primitives",
+ "subtle-encoding",
+]
+
+[[package]]
+name = "ibc-core-host-types"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5879fb43b0789f42919b7965a93f8a18a08eaa39bf624fbaf837d8673ef1ecdc"
+dependencies = [
+ "base64 0.22.1",
+ "derive_more 1.0.0",
+ "displaydoc",
+ "ibc-primitives",
+ "prost 0.13.5",
+ "serde",
+]
+
+[[package]]
+name = "ibc-core-router-types"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "61cdfb5f8f7986ac50941f556c16d46e81cdf3529b257be1ab3beca8281f953e"
+dependencies = [
+ "derive_more 1.0.0",
+ "displaydoc",
+ "ibc-core-host-types",
+ "ibc-primitives",
+ "ibc-proto",
+ "serde",
+ "subtle-encoding",
+ "tendermint",
+]
+
+[[package]]
+name = "ibc-primitives"
+version = "0.57.0"
+dependencies = [
+ "derive_more 1.0.0",
+ "displaydoc",
+ "ibc-proto",
+ "prost 0.13.5",
+ "serde",
+ "time",
 ]
 
 [[package]]
@@ -16005,6 +16246,7 @@ dependencies = [
  "tempo-precompiles-macros",
  "tempo-primitives",
  "tempo-revm",
+ "tempo-tendermint-verifier",
  "thiserror 2.0.18",
  "tracing",
  "x509-cert",
@@ -16128,6 +16370,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-tendermint-verifier"
+version = "1.14.0"
+dependencies = [
+ "hex",
+ "ibc-client-tendermint",
+ "ibc-core-client-types",
+ "ibc-core-commitment-types",
+ "ibc-core-host-types",
+ "prost 0.13.5",
+ "serde",
+ "serde_json",
+ "tendermint",
+ "tendermint-light-client-membership",
+ "tendermint-light-client-misbehaviour",
+ "tendermint-light-client-update-client",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "tempo-transaction-pool"
 version = "1.14.0"
 dependencies = [
@@ -16218,6 +16479,7 @@ dependencies = [
  "secp256k1 0.30.0",
  "serde",
  "serde_json",
+ "tempo-alloy",
  "tempo-chainspec",
  "tempo-consensus-config",
  "tempo-contracts",
@@ -16257,6 +16519,44 @@ dependencies = [
  "tendermint-proto",
  "time",
  "zeroize",
+]
+
+[[package]]
+name = "tendermint-light-client-membership"
+version = "0.1.0"
+dependencies = [
+ "ibc-core-commitment-types",
+ "ibc-core-host-types",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "tendermint-light-client-misbehaviour"
+version = "0.1.0"
+dependencies = [
+ "ibc-client-tendermint",
+ "ibc-core-client-types",
+ "ibc-core-host-types",
+ "sha2 0.10.9",
+ "tendermint",
+ "tendermint-light-client-update-client",
+ "tendermint-light-client-verifier",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "tendermint-light-client-update-client"
+version = "0.1.0"
+dependencies = [
+ "ibc-client-tendermint",
+ "ibc-core-client",
+ "ibc-core-client-types",
+ "ibc-core-host-types",
+ "ibc-primitives",
+ "sha2 0.10.9",
+ "tendermint",
+ "tendermint-light-client-verifier",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
