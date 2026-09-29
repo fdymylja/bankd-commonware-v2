@@ -93,7 +93,7 @@ gaiad stands in for Osmosis. It already has 08-wasm (ibc-go 08-wasm v10.5.0), Ju
 6. One ICS20 v2 transfer each way, acks back. Old `ibc/...` vouchers on gaia stay on the dead v1 channel, the drain step is what covers them.
 7. Force a commonware epoch change and relay another packet to prove client updates still verify.
 
-Stage status: 1 and 2 done (`juno-migration.sh v1-up`), recover tested and ruled out. Halt, export and commonware launch are next.
+Stage status: `v1-up`, `halt` and `launch` work (balances verified on both commonware validators). Recover tested and ruled out. Left: cw client on gaia, v2 transfers, legacy alias. Native BRL is the JUNO token here, 18 decimals, and the adapter maps 1 ujuno to 1e12 wei.
 
 ## Open questions
 
