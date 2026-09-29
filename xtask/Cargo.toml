@@ -16,6 +16,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+tempo-alloy.workspace = true
 tempo-chainspec = { workspace = true, features = ["default"] }
 tempo-contracts.workspace = true
 tempo-cosmos-address.workspace = true

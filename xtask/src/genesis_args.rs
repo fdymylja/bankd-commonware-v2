@@ -171,6 +171,16 @@ pub(crate) struct GenesisArgs {
     #[arg(long, value_delimiter = ',', requires = "ibc_predeploy")]
     ibc_hub_clients: Vec<String>,
 
+    /// bankd: hub only, legacy denom traces (e.g. transfer/channel-0/ujuno) the adapter treats as
+    /// native ujuno returning home.
+    #[arg(long, value_delimiter = ',', requires = "ibc_predeploy")]
+    ibc_legacy_denoms: Vec<String>,
+
+    /// bankd: hub only, `<client>=<wei>` escrow seeded in the adapter, which is funded with the same
+    /// wei. Repeatable.
+    #[arg(long, value_delimiter = ',', value_parser = parse_seed_escrow, requires = "ibc_predeploy")]
+    ibc_seed_escrow: Vec<(String, U256)>,
+
     /// Disable creating Alpha/Beta/ThetaUSD tokens.
     #[arg(long)]
     no_extra_tokens: bool,
@@ -627,6 +637,8 @@ impl GenesisArgs {
                     owner: validator_admin,
                     relayers: &self.ibc_relayers,
                     hub_clients: &self.ibc_hub_clients,
+                    legacy_denoms: &self.ibc_legacy_denoms,
+                    seed_escrow: &self.ibc_seed_escrow,
                 },
                 self.chain_id,
             )?;
@@ -769,6 +781,14 @@ impl GenesisArgs {
 
         Ok((genesis, consensus_config))
     }
+}
+
+fn parse_seed_escrow(s: &str) -> Result<(String, U256), String> {
+    let (client, wei) = s.split_once('=').ok_or("expected <client>=<wei>")?;
+    Ok((
+        client.to_string(),
+        wei.parse::<U256>().map_err(|e| e.to_string())?,
+    ))
 }
 
 fn insert_zone_state_at_genesis(

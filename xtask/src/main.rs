@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 
 use crate::{
     bootstrap_shadowfork::BootstrapShadowfork, check_abi::CheckAbi, cosmos_key::CosmosKey,
-    generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
+    cosmos_send::CosmosSend, generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
     generate_hardfork::AddHardfork, generate_localnet::GenerateLocalnet,
     generate_shadowfork::GenerateShadowfork, generate_state_bloat::GenerateStateBloat,
     get_dkg_outcome::GetDkgOutcome, identity_transitions::GetIdentityTransitions,
@@ -18,6 +18,7 @@ mod bankd_ibc;
 mod bootstrap_shadowfork;
 mod check_abi;
 mod cosmos_key;
+mod cosmos_send;
 mod generate_devnet;
 mod generate_genesis;
 mod generate_hardfork;
@@ -35,6 +36,7 @@ async fn main() -> eyre::Result<()> {
     match args.action {
         Action::CheckAbi(args) => args.run().wrap_err("failed ABI alignment check"),
         Action::CosmosKey(args) => args.run(),
+        Action::CosmosSend(args) => args.run().await,
         Action::GetDkgOutcome(args) => args.run().await.wrap_err("failed to get DKG outcome"),
         Action::GetIdentityTransitions(args) => args
             .run()
@@ -79,6 +81,7 @@ struct Args {
 enum Action {
     CheckAbi(CheckAbi),
     CosmosKey(CosmosKey),
+    CosmosSend(CosmosSend),
     GetDkgOutcome(GetDkgOutcome),
     GetIdentityTransitions(GetIdentityTransitions),
     GenerateGenesis(GenerateGenesis),

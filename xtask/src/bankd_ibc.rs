@@ -7,7 +7,7 @@
 
 use alloy::{
     genesis::GenesisAccount,
-    primitives::{Address, B256, Bytes, U256, address, hex},
+    primitives::{Address, B256, Bytes, U256, address, hex, keccak256},
     sol,
     sol_types::{SolCall, SolValue},
 };
@@ -56,7 +56,11 @@ sol! {
     function setTargetFunctionRole(address target, bytes4[] selectors, uint64 roleId);
     function grantRole(uint64 roleId, address account, uint32 executionDelay);
     function setTrustedClient(string clientId, bool trusted);
+    function setLegacyDenom(string denom, bool allowed);
 }
+
+/// ICS20NativeAdapter storage slot of `escrowed`.
+const ESCROWED_SLOT: u64 = 1;
 
 /// ICS20NativeAdapter.Mode
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -77,6 +81,10 @@ pub(crate) struct PredeployInput<'a> {
     pub(crate) relayers: &'a [Address],
     /// Spoke only: local client ids trusted as the hub route.
     pub(crate) hub_clients: &'a [String],
+    /// Hub only: legacy denom traces treated as native ujuno coming home.
+    pub(crate) legacy_denoms: &'a [String],
+    /// Hub only: (client id, wei) escrow seeded in the adapter, which is funded with the same wei.
+    pub(crate) seed_escrow: &'a [(String, U256)],
 }
 
 /// Deploys and configures the IBC contracts in a fresh EVM and returns their genesis accounts.
@@ -97,6 +105,11 @@ pub(crate) fn predeploy(
             "--ibc-hub-clients {id:?}: use a custom id (4-128 of [a-zA-Z0-9._+-#[]<>], not \
              client-/channel-), generated ids can be taken by anyone"
         );
+    }
+    if input.mode != IbcMode::Hub
+        && !(input.legacy_denoms.is_empty() && input.seed_escrow.is_empty())
+    {
+        eyre::bail!("--ibc-legacy-denoms and --ibc-seed-escrow only apply to --ibc-mode hub");
     }
     let owner = input.owner;
 
@@ -201,6 +214,37 @@ pub(crate) fn predeploy(
             .abi_encode(),
         )?;
     }
+    for denom in input.legacy_denoms {
+        call(
+            evm,
+            owner,
+            ADAPTER,
+            setLegacyDenomCall {
+                denom: denom.clone(),
+                allowed: true,
+            }
+            .abi_encode(),
+        )?;
+    }
+    // Stands in for what the old chain had outstanding. Balance and mapping must move together.
+    let mut seeded = U256::ZERO;
+    for (client, wei) in input.seed_escrow {
+        let slot = keccak256(
+            [
+                client.as_bytes(),
+                &U256::from(ESCROWED_SLOT).to_be_bytes::<32>(),
+            ]
+            .concat(),
+        );
+        evm.db_mut()
+            .insert_account_storage(ADAPTER, slot.into(), *wei)?;
+        seeded += wei;
+    }
+    if !seeded.is_zero() {
+        let mut info = evm.db_mut().cache.accounts[&ADAPTER].info.clone();
+        info.balance = seeded;
+        evm.db_mut().insert_account_info(ADAPTER, info);
+    }
 
     let db = evm.db_mut();
     [ACCESS_MANAGER, ROUTER_IMPL, ROUTER, ADAPTER]
@@ -221,6 +265,7 @@ pub(crate) fn predeploy(
                 addr,
                 GenesisAccount {
                     nonce: Some(acc.info.nonce),
+                    balance: acc.info.balance,
                     code: acc.info.code.as_ref().map(|c| c.original_bytes()),
                     storage: (!storage.is_empty()).then_some(storage),
                     ..Default::default()
@@ -296,6 +341,8 @@ mod tests {
         function owner() returns (address);
         function MODE() returns (uint8);
         function trustedClients(string clientId) returns (bool);
+        function legacyDenoms(bytes32 traceHash) returns (bool);
+        function escrowed(string clientId) returns (uint256);
         function getIBCApp(string portId) returns (address);
         function authority() returns (address);
         function hasRole(uint64 roleId, address account) returns (bool isMember, uint32 executionDelay);
@@ -336,6 +383,8 @@ mod tests {
             owner: OWNER,
             relayers,
             hub_clients,
+            legacy_denoms: &[],
+            seed_escrow: &[],
         }
     }
 
@@ -532,6 +581,75 @@ mod tests {
         .abi_encode();
         assert!(reverts(evm, STRANGER, ADAPTER, set_trusted));
         call(evm, OWNER, ROUTER, add).unwrap();
+    }
+
+    #[test]
+    fn hub_seeds_escrow_and_legacy_alias() {
+        let Some(out) = artifacts() else { return };
+        let denoms = ["transfer/channel-0/ujuno".to_string()];
+        let seed = [(
+            "localgaia-mig-1".to_string(),
+            U256::from(10).pow(U256::from(18)),
+        )];
+        let alloc = predeploy(
+            PredeployInput {
+                legacy_denoms: &denoms,
+                seed_escrow: &seed,
+                ..input(&out, IbcMode::Hub, &[], &[])
+            },
+            9001,
+        )
+        .unwrap();
+        assert_eq!(alloc[&ADAPTER].balance, seed[0].1);
+        let evm = &mut chain(&alloc);
+        assert_eq!(
+            view(
+                evm,
+                ADAPTER,
+                escrowedCall {
+                    clientId: seed[0].0.clone()
+                }
+            ),
+            seed[0].1
+        );
+        assert_eq!(
+            view(
+                evm,
+                ADAPTER,
+                escrowedCall {
+                    clientId: "other-client".into()
+                }
+            ),
+            U256::ZERO
+        );
+        assert!(view(
+            evm,
+            ADAPTER,
+            legacyDenomsCall {
+                traceHash: keccak256(denoms[0].as_bytes())
+            }
+        ));
+        assert!(!view(
+            evm,
+            ADAPTER,
+            legacyDenomsCall {
+                traceHash: keccak256("transfer/channel-1/ujuno")
+            }
+        ));
+    }
+
+    #[test]
+    fn spoke_rejects_hub_only_seeding() {
+        let denoms = ["transfer/channel-0/ujuno".to_string()];
+        let err = predeploy(
+            PredeployInput {
+                legacy_denoms: &denoms,
+                ..input(Path::new("/nonexistent"), IbcMode::Spoke, &[], &[])
+            },
+            1,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("hub"), "{err}");
     }
 
     #[test]
