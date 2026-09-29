@@ -45,14 +45,28 @@ The important part. Juno<>Osmosis is a v1 channel: connection + channel bound to
 2. **Drain (best effort):** users bring their IBC assets home over the old channel before H. Osmosis-held `ujuno` unwinds back to native, so the final snapshot has it as plain balances.
 3. **Halt and export** as above, launch new chain.
 4. **On Osmosis (gov):** the old Juno 07-tendermint client is now expired/stale. Either:
-   - **A. recover it.** `MsgRecoverClient` substitutes the client with one pointing at the new chain. This needs the substitute to be the commonware 08-wasm client and the wasm contract to support the substitute check. **UNSURE** if ibc-go 08-wasm allows swapping a tendermint subject for a wasm substitute, and `cw-commonware` would need to handle `CheckSubstituteAndUpdateState`.
+   - **A. recover it. Tested, doesn't work.** On gaiad (ibc-go v10.7.0) `MsgRecoverClient` with an expired `07-tendermint` subject and an Active `08-wasm` substitute passes gov but fails on execution: `PANICKED: cannot convert *types.ClientState into *tendermint.ClientState`. Recover dispatches on the subject's client type, so a native tendermint client can only be recovered with another tendermint client. (Gov catches the panic, the chain is fine.) Only works if the counterparty's Juno client was already an 08-wasm client, then `ibc-wasm migrate-contract` could swap the contract instead.
    - **B. new client, new path.** Create a fresh `cw-commonware` client on Osmosis, register the v2 counterparty pair (Osmosis client id <-> our router client id). Old channel stays dead.
 5. **Denoms:** ICS20 v2 denom path uses client ids, not `channel-N`, so anything still on Osmosis as `ibc/H(transfer/channel-N/ujuno)` isn't fungible with `transfer/<new client>/ujuno`. Fix options:
    - Osmosis-side gov migration of the old denom (they've done token migrations before, **UNSURE** on mechanism).
    - Only support the drain path and leave stragglers to a one-time claim.
 6. **Escrow on our side:** the juno-side escrow for the old channel gets reproduced in genesis inside the ICS20 native adapter so supply invariants hold (escrow == vouchers elsewhere).
 
-Option B plus drain is the simplest and doesn't depend on anything undecided in ibc-go. A is nicer for holders but riskier.
+B plus drain is the plan since A is out for native tendermint clients.
+
+### Why not IBC channel upgrades
+
+Channel upgradability (ICS-04 upgrade handshake) can change a v1 channel's version, ordering and connection hops. It's the closest thing to "move the channel", but the upgrade handshake needs a v1 channel end on the counterparty (`ChanUpgradeTry/Ack/Confirm`) over a v1 connection. Our chain only has v2 in Solidity, so there's nobody to answer. Not tried in the e2e, and I'm not sure how much of it survives in ibc-go v10 (the `gaiad` CLI only exposes it through relayers, no gov or tx command).
+
+### Token continuity without moving the channel: legacy alias
+
+The old vouchers on the counterparty can still come home over v2, we just need the new chain to recognize them:
+
+1. Counterparty sends `ibc/H(transfer/channel-N/ujuno)` over the new v2 client. The v2 denom on our side becomes `transfer/<our client>/transfer/channel-N/ujuno`.
+2. In genesis, the ICS20 adapter is seeded with escrow equal to what the old chain had outstanding on channel-N, plus an allow-listed alias: that exact trace is treated as native `ujuno` returning home, so it's released from escrow.
+3. Supply invariant: native `ujuno` in circulation plus escrow equals old supply at H.
+
+That needs a change in `ICS20NativeAdapter.sol` (alias list, set at genesis or by admin) and it's the piece that makes migration seamless for holders on the counterparty. Not built yet. It goes in the e2e as step 6b: send the step-2 voucher from gaia over the new v2 client and check native `ujuno` shows up at the `juno1...` address.
 
 ### "Upgrade client via gov"
 
@@ -69,16 +83,17 @@ Two different things, don't mix them up:
 
 ## E2E plan
 
-New `scripts/bankd/juno-migration.sh`, in order, each step re-runnable:
+gaiad stands in for Osmosis. It already has 08-wasm (ibc-go 08-wasm v10.5.0), Juno doesn't need it. New `scripts/bankd/juno-migration.sh` drives these, each step re-runnable:
 
-1. `juno up`: 2 validator docker compose from `cosmoscontracts/juno`, funded test accounts derived with `xtask cosmos-key`.
-2. Send some txs so state isn't empty, halt via gov upgrade at H, `junod export`.
-3. Build genesis for the new chain from the export, start `bankd-localnet-up` with 2 validators.
-4. Check: `eth_getBalance` for the `0x` form of each funded `juno1...` matches the exported balance.
-5. Bridge both directions using the gaia flow as the template (store wasm via gov on Juno, create clients, register counterparties, one ICS20 transfer each way, ack back).
-6. Force a Juno validator power change and a commonware epoch change, relay another packet to prove client updates still verify.
+1. `juno-localnet.sh up`: 2 validators, native `junod` processes. Done, funded accounts are `abandon...about` index 0 and 1.
+2. `gaia-localnet.sh up`, then hermes opens a plain IBC v1 transfer channel Juno<>gaia and we send `ujuno` over it, so gaia holds `ibc/...` vouchers and Juno escrows.
+3. Halt Juno at H (gov software upgrade), export balances, build the new chain's genesis from them.
+4. `bankd-localnet-up` with 2 validators. Check `eth_getBalance` of the `0x` form of each funded `juno1...` matches the export.
+5. `MsgRecoverClient` on gaia was tried and fails (see option A above). So: create a fresh `cw-commonware` client on gaia and register the v2 counterparty pair (option B).
+6. One ICS20 v2 transfer each way, acks back. Old `ibc/...` vouchers on gaia stay on the dead v1 channel, the drain step is what covers them.
+7. Force a commonware epoch change and relay another packet to prove client updates still verify.
 
-Osmosis is out of scope for the e2e. A second cosmos chain playing "Osmosis" is a follow up once the above is green.
+Stage status: 1 and 2 done (`juno-migration.sh v1-up`), recover tested and ruled out. Halt, export and commonware launch are next.
 
 ## Open questions
 

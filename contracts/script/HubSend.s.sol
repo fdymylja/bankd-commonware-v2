@@ -61,10 +61,10 @@ contract HubSend is Script {
             encoding: ICS20Lib.ICS20_ENCODING,
             value: abi.encode(
                 IICS20TransferMsgs.FungibleTokenPacketData({
-                    denom: "brl",
+                    denom: "ujuno",
                     sender: Strings.toHexString(me),
                     receiver: Strings.toHexString(receiver),
-                    amount: 5 ether,
+                    amount: 5 ether / 1e12,
                     memo: ""
                 })
             )

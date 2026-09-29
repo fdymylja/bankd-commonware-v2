@@ -4,6 +4,7 @@
 #   gaia-bridge.sh api                  write the proof-api config and start it
 #   gaia-bridge.sh restart-api          restart proof-api, keeping the connection
 #   gaia-bridge.sh connect              create both light clients and register counterparties
+#   gaia-bridge.sh gaia-client         only the gaia half of connect: create the cw-commonware client on gaia
 #   gaia-bridge.sh to-gaia <tx hash>    relay packets from a bankd tx (recv on gaia, or acks)
 #   gaia-bridge.sh to-bankd <tx hash>   relay packets from a gaia tx (recv on bankd, or acks)
 #   gaia-bridge.sh send-from-gaia <0x receiver> <amount> <denom>
@@ -134,17 +135,27 @@ cmd_api() {
   fail "proof-api didn't listen on :$API_PORT"
 }
 
-cmd_connect() {
-  [[ -n "$SP1_VERIFIER" ]] || fail "SP1_VERIFIER not set (SP1VerifierGroth16 v6.1.0 address on bankd)"
-  local checksum
+# Creates the cw-commonware client on gaia and prints its id.
+create_gaia_client() {
+  local checksum gaia_client
   checksum="$(cat "$GAIA_HOME/wasm-checksum")"
-
-  echo "gaia: creating cw-commonware client for bankd $BANKD_CHAIN_ID (checksum $checksum)"
-  local res gaia_client
+  echo "gaia: creating cw-commonware client for bankd $BANKD_CHAIN_ID (checksum $checksum)" >&2
   gaia_submit "$(relayer gaia-create-client)" >/dev/null
   gaia_client="$(jq -r '.events[] | select(.type=="create_client") | .attributes[] | select(.key=="client_id") | .value' "$WORK/gaia-tx.result.json")"
   [[ -n "$gaia_client" ]] || fail "no client id in create_client event"
-  echo "  $gaia_client"
+  echo "  $gaia_client" >&2
+  echo "$gaia_client"
+}
+
+cmd_gaia_client() {
+  jq -n --arg g "$(create_gaia_client)" '{gaia_client: $g}' >"$WORK/state.json"
+  cat "$WORK/state.json"
+}
+
+cmd_connect() {
+  [[ -n "$SP1_VERIFIER" ]] || fail "SP1_VERIFIER not set (SP1VerifierGroth16 v6.1.0 address on bankd)"
+  local res gaia_client
+  gaia_client="$(create_gaia_client)"
 
   echo "bankd: deploying SP1ICS07Tendermint for $GAIA_CHAIN_ID"
   local code lc
@@ -210,7 +221,7 @@ cmd_to_bankd() {
 # Sends an ICS20 transfer from gaia over IBC v2, ABI encoded like the bankd adapter expects.
 # gaiad's transfer CLI can't pick the encoding, so this builds the channel/v2 MsgSendPacket itself.
 cmd_send_from_gaia() {
-  local receiver="${1:?bankd receiver 0x address}" amount="${2:?amount}" denom="${3:?denom (full trace, e.g. transfer/08-wasm-0/brl)}"
+  local receiver="${1:?bankd receiver 0x address}" amount="${2:?amount}" denom="${3:?denom (full trace, e.g. transfer/08-wasm-0/ujuno)}"
   local sender value timeout
   sender="$(gaia_addr)"
   value="$(cast abi-encode "f((string,string,string,uint256,string))" "($denom,$sender,$receiver,$amount,\"\")")"
@@ -241,6 +252,7 @@ cmd_restart_api() {
 case "${1:-}" in
   api) cmd_api ;;
   restart-api) cmd_restart_api ;;
+  gaia-client) cmd_gaia_client ;;
   connect) cmd_connect ;;
   to-gaia) cmd_to_gaia "${2:-}" ;;
   to-bankd) cmd_to_bankd "${2:-}" ;;

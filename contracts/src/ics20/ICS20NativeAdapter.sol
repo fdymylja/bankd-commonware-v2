@@ -16,9 +16,10 @@ import { INative, NATIVE_PRECOMPILE } from "./INative.sol";
 
 /// @title ICS20NativeAdapter
 /// @notice ICS20 (IBC v2) app that moves native BRL between bankd chains with no vouchers.
-/// @dev Uses the stock ICS20 wire format (ics20-1, solidity-abi FungibleTokenPacketData) with denom "brl".
+/// @dev Uses the stock ICS20 wire format (ics20-1, solidity-abi FungibleTokenPacketData) with denom "ujuno".
+/// Native has 18 decimals, packets carry 6 (ujuno), so wei = packet amount * 1e12.
 /// - Hub (central bank): escrows msg.value per client on send, releases on receive-back. Returns
-///   come as "brl" from bankd spokes, or as the "transfer/{client}/brl" voucher trace from stock
+///   come as "ujuno" from bankd spokes, or as the "transfer/{client}/ujuno" voucher trace from stock
 ///   ICS20 chains (e.g. a Cosmos hub).
 /// - Spoke: burns msg.value on send, mints through the Native precompile on receive, but only for
 ///   packets arriving on an allow-listed local client (the one tracking the hub).
@@ -29,8 +30,10 @@ contract ICS20NativeAdapter is IIBCApp, Ownable {
         Spoke
     }
 
-    string public constant DENOM = "brl";
-    bytes32 private constant DENOM_HASH = keccak256("brl");
+    string public constant DENOM = "ujuno";
+    bytes32 private constant DENOM_HASH = keccak256("ujuno");
+    /// @notice wei per packet unit. Native is 18 decimals, ujuno is 6.
+    uint256 public constant SCALE = 1e12;
 
     IICS26Router public immutable ROUTER;
     Mode public immutable MODE;
@@ -47,6 +50,7 @@ contract ICS20NativeAdapter is IIBCApp, Ownable {
 
     error OnlyRouter();
     error ZeroAmount();
+    error DustAmount(uint256 value);
     error UntrustedClient(string clientId);
     error InvalidPayload();
     error InvalidDenom(string denom);
@@ -79,6 +83,7 @@ contract ICS20NativeAdapter is IIBCApp, Ownable {
         string calldata memo
     ) external payable returns (uint64 sequence) {
         require(msg.value != 0, ZeroAmount());
+        require(msg.value % SCALE == 0, DustAmount(msg.value));
         if (MODE == Mode.Hub) {
             escrowed[clientId] += msg.value;
         } else {
@@ -91,7 +96,7 @@ contract ICS20NativeAdapter is IIBCApp, Ownable {
             denom: DENOM,
             sender: Strings.toHexString(msg.sender),
             receiver: receiver,
-            amount: msg.value,
+            amount: msg.value / SCALE,
             memo: memo
         });
         sequence = ROUTER.sendPacket(
@@ -127,13 +132,13 @@ contract ICS20NativeAdapter is IIBCApp, Ownable {
                 d == DENOM_HASH || d == keccak256(abi.encodePacked("transfer/", msg_.sourceClient, "/", DENOM)),
                 InvalidDenom(data.denom)
             );
-            _release(msg_.destinationClient, receiver, data.amount);
+            _release(msg_.destinationClient, receiver, data.amount * SCALE);
         } else {
             require(keccak256(bytes(data.denom)) == DENOM_HASH, InvalidDenom(data.denom));
             require(trustedClients[msg_.destinationClient], UntrustedClient(msg_.destinationClient));
-            _native(abi.encodeCall(INative.mint, (receiver, data.amount)));
+            _native(abi.encodeCall(INative.mint, (receiver, data.amount * SCALE)));
         }
-        emit TransferReceived(msg_.destinationClient, msg_.sequence, receiver, data.amount);
+        emit TransferReceived(msg_.destinationClient, msg_.sequence, receiver, data.amount * SCALE);
         return ICS20Lib.SUCCESSFUL_ACKNOWLEDGEMENT_JSON;
     }
 
@@ -155,15 +160,15 @@ contract ICS20NativeAdapter is IIBCApp, Ownable {
     /// @dev Undo a failed send: hub releases its own escrow, spoke re-mints what it burned.
     function _refund(string calldata clientId, uint64 sequence, IICS26RouterMsgs.Payload calldata payload) private {
         IICS20TransferMsgs.FungibleTokenPacketData memory data = _decode(payload);
-        // We only ever send bare "brl".
+        // We only ever send bare "ujuno".
         require(keccak256(bytes(data.denom)) == DENOM_HASH, InvalidDenom(data.denom));
         address sender = ICS20Lib.mustHexStringToAddress(data.sender);
         if (MODE == Mode.Hub) {
-            _release(clientId, sender, data.amount);
+            _release(clientId, sender, data.amount * SCALE);
         } else {
-            _native(abi.encodeCall(INative.mint, (sender, data.amount)));
+            _native(abi.encodeCall(INative.mint, (sender, data.amount * SCALE)));
         }
-        emit TransferRefunded(clientId, sequence, sender, data.amount);
+        emit TransferRefunded(clientId, sequence, sender, data.amount * SCALE);
     }
 
     function _release(string calldata clientId, address to, uint256 amount) private {

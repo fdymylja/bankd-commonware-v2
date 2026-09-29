@@ -69,10 +69,10 @@ contract ICS20NativeAdapterTest is Test {
             encoding: ICS20Lib.ICS20_ENCODING,
             value: abi.encode(
                 IICS20TransferMsgs.FungibleTokenPacketData({
-                    denom: "brl",
+                    denom: "ujuno",
                     sender: Strings.toHexString(sender),
                     receiver: Strings.toHexString(receiver),
-                    amount: amount,
+                    amount: amount / 1e12,
                     memo: ""
                 })
             )
@@ -208,7 +208,7 @@ contract ICS20NativeAdapterTest is Test {
         // A stock ICS20 chain returns the voucher with its own client in the trace.
         address carol = makeAddr("carol");
         IICS26RouterMsgs.Packet memory p = _packet(spokeClient, hubClient, 1, bob, carol, 2 ether);
-        _recv(hub, _withDenom(p, string.concat("transfer/", spokeClient, "/brl")));
+        _recv(hub, _withDenom(p, string.concat("transfer/", spokeClient, "/ujuno")));
 
         assertEq(carol.balance, 2 ether);
         assertEq(hub.adapter.escrowed(hubClient), 3 ether);
@@ -219,7 +219,7 @@ contract ICS20NativeAdapterTest is Test {
 
         address carol = makeAddr("carol");
         IICS26RouterMsgs.Packet memory p = _packet(spokeClient, hubClient, 1, bob, carol, 2 ether);
-        p = _withDenom(p, "transfer/client-9/brl");
+        p = _withDenom(p, "transfer/client-9/ujuno");
         _recv(hub, p);
 
         assertEq(carol.balance, 0);
@@ -231,7 +231,7 @@ contract ICS20NativeAdapterTest is Test {
 
     function test_SpokeRejectsVoucherTrace() public {
         IICS26RouterMsgs.Packet memory p = _packet(hubClient, spokeClient, 1, alice, bob, 1 ether);
-        _recv(spoke, _withDenom(p, string.concat("transfer/", hubClient, "/brl")));
+        _recv(spoke, _withDenom(p, string.concat("transfer/", hubClient, "/ujuno")));
         assertEq(bob.balance, 0);
     }
 
@@ -274,9 +274,12 @@ contract ICS20NativeAdapterTest is Test {
         assertEq(_ackCommitment(spoke, p), ICS24Host.packetAcknowledgementCommitmentBytes32(acks));
     }
 
-    function testFuzz_SupplyInvariant(uint96 out, uint96 back) public {
+    function testFuzz_SupplyInvariant(uint64 outUnits, uint64 backUnits) public {
+        // Amounts are whole ujuno, i.e. multiples of 1e12 wei.
+        uint256 out = uint256(outUnits) * 1e12;
+        uint256 back = uint256(backUnits) * 1e12;
         vm.assume(out > 0 && back > 0 && back <= out);
-        vm.deal(alice, uint256(out));
+        vm.deal(alice, out);
         _hubToSpoke(out);
         vm.prank(bob);
         uint64 seq = spoke.adapter.sendTransfer{ value: back }(spokeClient, Strings.toHexString(alice), timeout, "");
