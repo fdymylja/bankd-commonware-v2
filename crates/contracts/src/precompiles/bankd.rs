@@ -20,6 +20,8 @@ pub const SHIELD_ADDRESS: Address = address!("0x00000000000000000000000000000000
 /// TendermintVerifier ("TMVER"): stateless CometBFT light client verification.
 pub const TENDERMINT_VERIFIER_ADDRESS: Address =
     address!("0x000000000000000000000000000000544D564552");
+/// Cw ("CWASM"): CosmWasm runtime. Contract state lives in this account's storage.
+pub const CW_ADDRESS: Address = address!("0x000000000000000000000000000000435741534D");
 /// Shieldd denom for native BRL (18 decimals, atto-BRL).
 pub const SHIELD_BRL_DENOM: &str = "abrl";
 
@@ -41,6 +43,7 @@ crate::sol! {
         error ZeroDeposit();
         error EmptyRecipient();
         error NotPayable();
+        error CwFailed(string reason);
     }
 }
 
@@ -166,5 +169,36 @@ crate::sol! {
         error EmptyRecipient();
         error NotPayable();
         error AccountBlocked(address account);
+    }
+}
+
+crate::sol! {
+    /// CosmWasm runtime. Contracts are addressed by 20 byte EVM addresses, messages are JSON.
+    #[derive(Debug, PartialEq, Eq)]
+    #[sol(abi)]
+    interface ICw {
+        /// Validates and stores a wasm blob in one tx. Returns its code id. A tx is gas capped,
+        /// so big blobs go through `uploadCode` + `finalizeCode` instead.
+        function storeCode(bytes calldata wasm) external returns (uint64 codeId);
+        /// Appends a chunk to an unfinished upload. `codeId` 0 starts a new one. Only the
+        /// uploader can append.
+        function uploadCode(uint64 codeId, bytes calldata chunk) external returns (uint64 id);
+        /// Validates the uploaded chunks as one wasm blob and makes the code usable.
+        function finalizeCode(uint64 codeId) external;
+        /// Runs `instantiate` on a new contract. `data` is the response data.
+        function instantiate(uint64 codeId, bytes calldata msg) external returns (address contractAddress, bytes memory data);
+        /// Runs `execute`. Returns the response data.
+        function execute(address contractAddress, bytes calldata msg) external returns (bytes memory data);
+        /// Runs `query`. Returns the raw response (JSON).
+        function query(address contractAddress, bytes calldata msg) external view returns (bytes memory response);
+        function isContract(address account) external view returns (bool);
+        function contractInfo(address contractAddress) external view returns (uint64 codeId, address creator);
+
+        event CodeStored(uint64 indexed codeId, address indexed creator, bytes32 codeHash);
+        event Instantiated(address indexed contractAddress, uint64 indexed codeId, address indexed creator);
+        /// One per wasm event. The response attributes come as the `wasm` event.
+        event WasmEvent(address indexed contractAddress, string eventType, string[] keys, string[] values);
+
+        error CwFailed(string reason);
     }
 }

@@ -24,6 +24,7 @@ members = [
   "crates/alloy",
   "crates/bankd-shield",
   "crates/bankd-shield-wallet",
+  "crates/bankd-cw",
   "crates/chainspec",
   "crates/consensus",
   "crates/consensus-config",
@@ -157,6 +158,7 @@ tempo-precompiles = { path = "crates/precompiles", default-features = false }
 tempo-precompiles-macros = { path = "crates/precompiles-macros" }
 tempo-primitives = { path = "crates/primitives", default-features = false }
 bankd-shield = { path = "crates/bankd-shield" }
+bankd-cw = { path = "crates/bankd-cw" }
 tempo-cosmos-address = { path = "crates/cosmos-address" }
 tempo-contracts = { path = "crates/contracts", default-features = false, features = ["serde"] }
 tempo-telemetry-util = { path = "crates/telemetry-util", default-features = false }

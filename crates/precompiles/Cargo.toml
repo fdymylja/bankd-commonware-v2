@@ -33,6 +33,7 @@ bitflags.workspace = true
 aws-lc-rs.workspace = true
 tempo-nitro-attestation.workspace = true
 tempo-tendermint-verifier.workspace = true
+bankd-cw.workspace = true
 
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true

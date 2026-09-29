@@ -26,6 +26,12 @@ bankd-localnet-down chain_id="9001":
 bankd-smoke rpc_port="8545" chain_id="9001":
     ./scripts/bankd/smoke.sh {{rpc_port}} {{chain_id}}
 
+[group('bankd')]
+[doc('Build the counter wasm and run the CosmWasm e2e against a running localnet')]
+bankd-cw-e2e rpc_port="8545":
+    ./cw-contracts/counter/build.sh
+    ./scripts/bankd/cw-e2e.sh {{rpc_port}}
+
 [group('specs')]
 [doc('Build tempo-std interfaces and compare them against Rust sol! ABIs')]
 check-abi tempo_std="":

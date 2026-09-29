@@ -5,12 +5,14 @@
 pub mod authority;
 pub mod bank_send;
 pub mod compliance;
+pub mod cw;
 pub mod native;
 pub mod shield;
 
 pub use authority::Authority;
 pub use bank_send::BankSend;
 pub use compliance::Compliance;
+pub use cw::Cw;
 pub use native::Native;
 pub use shield::Shield;
 

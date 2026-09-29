@@ -38,7 +38,7 @@ pub mod test_util;
 use crate::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
-    bankd::{Authority, BankSend, Compliance, Native, Shield},
+    bankd::{Authority, BankSend, Compliance, Cw, Native, Shield},
     current_committee::CurrentCommittee,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
@@ -74,7 +74,7 @@ use revm::{
 
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, AUTHORITY_ADDRESS, BANK_SEND_ADDRESS,
-    COMPLIANCE_ADDRESS, CURRENT_COMMITTEE_ADDRESS, DEFAULT_FEE_TOKEN, NATIVE_ADDRESS,
+    COMPLIANCE_ADDRESS, CURRENT_COMMITTEE_ADDRESS, CW_ADDRESS, DEFAULT_FEE_TOKEN, NATIVE_ADDRESS,
     NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SHIELD_ADDRESS,
     SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
     SYSTEM_PRECOMPILES, TENDERMINT_VERIFIER_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
@@ -273,6 +273,8 @@ pub fn extend_tempo_precompiles(
             Some(BankSend::create_precompile(&env))
         } else if *address == SHIELD_ADDRESS {
             Some(Shield::create_precompile(&env))
+        } else if *address == CW_ADDRESS {
+            Some(Cw::create_precompile(&env))
         } else if *address == TENDERMINT_VERIFIER_ADDRESS && env.cfg.spec.is_t14() {
             Some(TendermintVerifier::create_precompile(&env))
         } else {
@@ -449,6 +451,13 @@ impl Shield {
     /// `msg.value`, since `deposit` is payable.
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("Shield", env: env, |input| { Self::new().with_value(input.value) })
+    }
+}
+
+impl Cw {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("Cw", env: env, |input| { Self::new() })
     }
 }
 
@@ -1468,6 +1477,129 @@ mod tests {
             } => assert!(out.is_empty()),
             other => panic!("unexpected pre-T14 result: {other:?}"),
         }
+    }
+
+    /// storeCode, instantiate, execute, query of the counter contract through the real EVM.
+    #[test]
+    fn test_cw_counter_end_to_end_in_evm() {
+        use revm::{
+            DatabaseCommit,
+            context::result::{ExecutionResult, Output},
+        };
+        use tempo_contracts::precompiles::ICw;
+
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T13);
+        let mut db = CacheDB::new(EmptyDB::new());
+        db.insert_account_info(
+            CW_ADDRESS,
+            AccountInfo {
+                nonce: 1,
+                code: Some(Bytecode::new_legacy(bytes!("ef"))),
+                ..Default::default()
+            },
+        );
+        let mut evm = TempoEvmFactory::default().create_evm(
+            db,
+            EvmEnv {
+                cfg_env: cfg,
+                block_env: TempoBlockEnv::default(),
+            },
+        );
+        let sender = Address::repeat_byte(0x77);
+        let mut nonce = 0;
+        let mut send = |data: Vec<u8>, gas_limit: u64| {
+            nonce += 1;
+            let res = evm
+                .transact_raw(TempoTxEnv {
+                    inner: TxEnv {
+                        caller: sender,
+                        nonce: nonce - 1,
+                        gas_price: 0,
+                        gas_limit,
+                        kind: TxKind::Call(CW_ADDRESS),
+                        data: data.into(),
+                        ..Default::default()
+                    },
+                    is_system_tx: false,
+                    ..Default::default()
+                })
+                .unwrap();
+            evm.db_mut().commit(res.state);
+            match res.result {
+                ExecutionResult::Success {
+                    output: Output::Call(out),
+                    gas,
+                    ..
+                } => (out, gas.tx_gas_used()),
+                other => panic!("call failed: {other:?}"),
+            }
+        };
+
+        let wasm = include_bytes!("../../../cw-contracts/counter/artifacts/cw_counter.wasm");
+        let mut code_id = 0;
+        for chunk in wasm.chunks(10_000) {
+            let (out, gas) = send(
+                ICw::uploadCodeCall {
+                    codeId: code_id,
+                    chunk: chunk.to_vec().into(),
+                }
+                .abi_encode(),
+                16_000_000,
+            );
+            code_id = ICw::uploadCodeCall::abi_decode_returns(&out).unwrap();
+            println!("uploadCode chunk gas: {gas}");
+        }
+        send(
+            ICw::finalizeCodeCall { codeId: code_id }.abi_encode(),
+            16_000_000,
+        );
+        assert_eq!(code_id, 1);
+
+        let (out, gas) = send(
+            ICw::instantiateCall {
+                codeId: code_id,
+                msg: br#"{"count":5}"#.to_vec().into(),
+            }
+            .abi_encode(),
+            10_000_000,
+        );
+        let inst = ICw::instantiateCall::abi_decode_returns(&out).unwrap();
+        println!("instantiate gas: {gas}");
+        assert_eq!(inst.contractAddress[..4], [0xC0, 0xDE, 0xC0, 0xDE]);
+
+        let (out, gas) = send(
+            ICw::executeCall {
+                contractAddress: inst.contractAddress,
+                msg: br#"{"increment":{}}"#.to_vec().into(),
+            }
+            .abi_encode(),
+            10_000_000,
+        );
+        let data = ICw::executeCall::abi_decode_returns(&out).unwrap();
+        println!("execute gas: {gas}");
+        assert_eq!(data.as_ref(), 6u64.to_be_bytes());
+
+        let (out, gas) = send(
+            ICw::queryCall {
+                contractAddress: inst.contractAddress,
+                msg: br#"{"get_count":{}}"#.to_vec().into(),
+            }
+            .abi_encode(),
+            10_000_000,
+        );
+        let res = ICw::queryCall::abi_decode_returns(&out).unwrap();
+        println!("query gas: {gas}");
+        assert_eq!(res.as_ref(), br#"{"count":"6"}"#);
+
+        let (out, _) = send(
+            ICw::isContractCall {
+                account: inst.contractAddress,
+            }
+            .abi_encode(),
+            1_000_000,
+        );
+        assert!(ICw::isContractCall::abi_decode_returns(&out).unwrap());
     }
 
     #[test]

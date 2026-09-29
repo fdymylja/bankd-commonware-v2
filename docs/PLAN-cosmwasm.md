@@ -88,3 +88,16 @@ About 2 weeks total.
 - `rust-toolchain.toml` pins 1.97.1, workspace edition 2024, MSRV 1.95.
 - Use the `Justfile` (`bankd-localnet-up`, `bankd-smoke`, `check-abi`) and `scripts/bankd/*.sh`.
 - Format with `cargo +nightly fmt`.
+
+## Status (built)
+
+Works end to end on the localnet: `./scripts/bankd/cw-e2e.sh` (or `just bankd-cw-e2e`) stores, instantiates, executes and queries the counter.
+
+What we did differently from the plan, all to keep it simple:
+
+- State is in EVM storage on the `cw` address (0x...435741534D), not RocksDB. So reverts, the state root and gas metering just work, and no block hooks were needed. The inner revert risk is gone too.
+- Wasm code is stored as bytecode of chunk accounts (~1100 gas/byte, tx cap 16.7M gas), so big contracts go through `uploadCode` (10KB chunks) + `finalizeCode`. The normal cosmwasm-std counter (165KB) takes 17 chunks. `storeCode` is the one tx shortcut for small blobs.
+- Human addresses are lowercase 0x hex, padded to 32 bytes inside the `Api`. No bech32.
+- Live from genesis, no hardfork. `xtask` initializes the account.
+- `cosmwasm-vm` 2.3.5 with default features off (no iterators). Wasm gas is 200 per EVM gas, unbenchmarked.
+- Still out: submessages, funds, iterators, migrate, sudo. Bank balance queries work (abrl only).

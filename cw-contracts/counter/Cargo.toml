@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 publish = false
 rust-version = "1.86"
-description = "Basic counter contract to verify CosmWasm on bankd"
+description = "Counter contract to verify CosmWasm on bankd"
 
 # Standalone workspace, like light-clients/cw-commonware.
 [workspace]

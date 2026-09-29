@@ -1,0 +1,21 @@
+[package]
+name = "bankd-cw"
+description = "CosmWasm runtime (cosmwasm-vm) for bankd"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+cosmwasm-std = "2.2"
+# no default features: drops the iterator imports, host storage is a hashed map with no ordering
+cosmwasm-vm = { version = "2.2", default-features = false }
+thiserror.workspace = true
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }

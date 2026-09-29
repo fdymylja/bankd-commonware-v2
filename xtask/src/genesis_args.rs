@@ -55,7 +55,7 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
-    bankd::{Authority, BankSend, Compliance, Native, Shield, native::INative},
+    bankd::{Authority, BankSend, Compliance, Cw, Native, Shield, native::INative},
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
@@ -1171,6 +1171,7 @@ fn initialize_bankd_modules(
             if t14_active {
                 TendermintVerifier::new().initialize()?;
             }
+            Cw::new().initialize()?;
             Shield::new().initialize()
         },
     )?;
