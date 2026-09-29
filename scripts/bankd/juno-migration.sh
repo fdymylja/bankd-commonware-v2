@@ -7,6 +7,8 @@
 #   juno-migration.sh launch    2-validator commonware chain (9001, rpc 8545) with the exported balances in genesis
 #   juno-migration.sh bridge    cw-commonware client on gaia (verifies the commonware validators), mock client on
 #                               commonware for gaia, then one ujuno transfer commonware to gaia over IBC v2
+#   juno-migration.sh alias     relaunches commonware with escrow (1e18 wei) + legacy alias seeded in genesis, sends the old v1
+#                               voucher from gaia over v2, relays the recv by hand (mock client), checks native ujuno arrives
 #   juno-migration.sh down
 #
 # genesis-alloc.json lands in target/junod-localnet, it is what localnet.sh takes as GENESIS_ALLOC.
@@ -154,6 +156,7 @@ json.dump(rows, open(sys.argv[3], "w"), indent=2)
 
 ADMIN_PK=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 ROUTER=0x4be2f106a550b243B60Fa279228f4e94b1EF8AeC
+RELAYER_PK=0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
 ADAPTER=0xBA01319fA1739A1D69aBae52B64105C74764CA4c
 BANKD_RPC=http://127.0.0.1:8545
 
@@ -190,6 +193,51 @@ bridge() {
   echo "commonware to gaia over v2 works, gaia holds $bal ujuno (transfer/$gaia_client/ujuno)"
 }
 
+# Old v1 voucher (transfer/channel-0/ujuno) comes home over v2 as native ujuno. Needs bridge to have run.
+# The chain is relaunched because escrow and alias are genesis state.
+alias_e2e() {
+  local bridge="$ROOT/scripts/bankd/gaia-bridge.sh" gaia_client lc to want escrow_before
+  local legacy=transfer/channel-0/ujuno escrow_wei=$((1000000 * SCALE))
+  export GAIA_HOME GAIA_CHAIN_ID=$GAIA_ID GAIA_RPC=http://127.0.0.1:28000
+  gaia_client="$(jq -r .gaia_client "$ROOT/target/gaia-bridge/state.json")"
+
+  "$ROOT/scripts/bankd/localnet.sh" down 9001
+  (cd "$ROOT" && cargo build --bin tempo --bin tempo-xtask) || exit 1
+  (cd "$ROOT/contracts" && forge build -q) || exit 1
+  IBC_RELAYERS=0x70997970C51812dc3A010C7d01b50e0d17dC79C8 IBC_LEGACY_DENOMS=$legacy IBC_SEED_ESCROW="$GAIA_ID=$escrow_wei" \
+    GENESIS_ALLOC="$ROOT/target/junod-localnet/genesis-alloc.json" "$ROOT/scripts/bankd/localnet.sh" up 9001 8545 9000 2
+
+  # The gaia side of the client pair survives, only the commonware side is new.
+  lc="$(cd "$ROOT/contracts/lib/ibc-contracts/ibc-solidity" && forge create --rpc-url $BANKD_RPC --private-key $ADMIN_PK \
+    --broadcast --json test/solidity-ibc/mocks/DummyLightClient.sol:DummyLightClient --constructor-args 0 0 false | jq -r .deployedTo)"
+  cast send --rpc-url $BANKD_RPC --private-key $ADMIN_PK --json $ROUTER "addClient(string,(string,bytes[]),address)" \
+    "$GAIA_ID" "($gaia_client,[0x696263,0x])" "$lc" | jq -e '.status == "0x1"' >/dev/null
+
+  to=0x00000000000000000000000000000000000a11a5
+  want=$((1000000 * SCALE))
+  escrow_before="$(cast call --rpc-url $BANKD_RPC $ADAPTER "escrowed(string)(uint256)" "$GAIA_ID" | awk '{print $1}')"
+  [[ "$escrow_before" == "$want" ]] || { echo "escrow not seeded, got $escrow_before" >&2; exit 1; }
+
+  "$bridge" send-from-gaia "$to" 1000000 "$legacy"
+  # The mock client accepts any proof, so the recv is relayed by hand: packet = the gaia MsgSendPacket
+  # plus the sequence from its send_packet event.
+  local res="$ROOT/target/gaia-bridge/gaia-tx.result.json" seq value ts packet
+  seq="$(jq -r '[.events[] | select(.type=="send_packet")][0].attributes[] | select(.key=="packet_sequence") | .value' "$res")"
+  value="0x$(jq -r '.tx.body.messages[0].payloads[0].value' "$res" | base64 -d | xxd -p | tr -d '\n')"
+  ts="$(jq -r '.tx.body.messages[0].timeout_timestamp' "$res")"
+  packet="($seq,\"$gaia_client\",\"$GAIA_ID\",$ts,[(\"transfer\",\"transfer\",\"ics20-1\",\"application/x-solidity-abi\",$value)])"
+  cast send --rpc-url $BANKD_RPC --private-key "$RELAYER_PK" --json $ROUTER \
+    "recvPacket(((uint64,string,string,uint64,(string,string,string,string,bytes)[]),bytes,(uint64,uint64)))" \
+    "($packet,0x00,(0,1))" | jq -e '.status == "0x1"' >/dev/null
+
+  local bal escrow_after
+  bal="$(cast balance --rpc-url $BANKD_RPC $to)"
+  escrow_after="$(cast call --rpc-url $BANKD_RPC $ADAPTER "escrowed(string)(uint256)" "$GAIA_ID" | awk '{print $1}')"
+  echo "recv: $to balance $bal wei, escrow $escrow_before -> $escrow_after"
+  [[ "$bal" == "$want" && "$escrow_after" == 0 ]] || { echo "alias release failed" >&2; exit 1; }
+  echo "old v1 voucher came home over v2 as native ujuno, escrow decreased by $want wei"
+}
+
 launch() {
   GENESIS_ALLOC="$ROOT/target/junod-localnet/genesis-alloc.json" "$ROOT/scripts/bankd/localnet.sh" up 9001 8545 9000 2
   # Every exported account must hold ujuno * SCALE wei on both validators.
@@ -216,6 +264,7 @@ case "${1:-}" in
   halt) halt ;;
   launch) launch ;;
   bridge) bridge ;;
+  alias) alias_e2e ;;
   down) down ;;
-  *) echo "usage: $0 v1-up|halt|launch|bridge|down" >&2; exit 1 ;;
+  *) echo "usage: $0 v1-up|halt|launch|bridge|alias|down" >&2; exit 1 ;;
 esac

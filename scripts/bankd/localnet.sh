@@ -12,6 +12,8 @@
 #   IBC_MODE=hub|spoke|none   adapter mode (default hub), none skips the predeploy
 #   IBC_RELAYERS=0xA,0xB      granted RELAYER_ROLE on the router
 #   IBC_HUB_CLIENTS=bankd-hub spoke only: client ids the adapter trusts as the hub
+#   IBC_LEGACY_DENOMS=a,b     hub only: legacy traces treated as native ujuno coming home
+#   IBC_SEED_ESCROW=client=wei hub only: escrow seeded in the adapter (and funded with the same wei)
 #   GENESIS_ALLOC=file.json   json {"0xaddr": "0xhexWei"} merged into genesis balances (migration)
 set -euo pipefail
 
@@ -76,6 +78,8 @@ up() {
     fi
     ibc=(--ibc-predeploy --ibc-mode "$IBC_MODE" --ibc-artifacts "$ROOT/contracts/out")
     [[ -n "${IBC_RELAYERS:-}" ]] && ibc+=(--ibc-relayers "$IBC_RELAYERS")
+    [[ -n "${IBC_LEGACY_DENOMS:-}" ]] && ibc+=(--ibc-legacy-denoms "$IBC_LEGACY_DENOMS")
+    [[ -n "${IBC_SEED_ESCROW:-}" ]] && ibc+=(--ibc-seed-escrow "$IBC_SEED_ESCROW")
     [[ "$IBC_MODE" == spoke ]] && ibc+=(--ibc-hub-clients "${IBC_HUB_CLIENTS:-bankd-hub}")
   fi
 

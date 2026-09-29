@@ -20,7 +20,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 [[ -f "$ROOT/.env" ]] && { set -a; source "$ROOT/.env"; set +a; }
 IBC="$ROOT/contracts/lib/ibc-contracts"
-WORK="$ROOT/target/gaia-bridge"
+WORK="${GAIA_BRIDGE_WORK:-$ROOT/target/gaia-bridge}"
 GAIA_HOME="${GAIA_HOME:-$ROOT/target/gaia-localnet}"
 
 BANKD_RPC="${BANKD_RPC:-http://127.0.0.1:8545}"
