@@ -229,6 +229,56 @@ contract ICS20NativeAdapterTest is Test {
         assertEq(_ackCommitment(hub, p), ICS24Host.packetAcknowledgementCommitmentBytes32(acks));
     }
 
+    string internal constant LEGACY = "transfer/channel-0/ujuno";
+
+    function _seedLegacy(uint256 escrow) internal {
+        hub.adapter.setLegacyDenom(LEGACY, true);
+        vm.deal(address(hub.adapter), escrow);
+        vm.store(address(hub.adapter), keccak256(abi.encodePacked(hubClient, uint256(1))), bytes32(escrow));
+    }
+
+    function test_HubReleasesLegacyAlias() public {
+        _seedLegacy(5 ether);
+        address carol = makeAddr("carol");
+        IICS26RouterMsgs.Packet memory p = _packet(spokeClient, hubClient, 1, bob, carol, 2 ether);
+        _recv(hub, _withDenom(p, string.concat("transfer/", spokeClient, "/", LEGACY)));
+        assertEq(carol.balance, 0, "prefixed trace is not the alias");
+
+        p = _packet(spokeClient, hubClient, 2, bob, carol, 2 ether);
+        _recv(hub, _withDenom(p, LEGACY));
+        assertEq(carol.balance, 2 ether);
+        assertEq(hub.adapter.escrowed(hubClient), 3 ether);
+    }
+
+    function test_HubRejectsUnlistedLegacyAlias() public {
+        _seedLegacy(5 ether);
+        address carol = makeAddr("carol");
+        IICS26RouterMsgs.Packet memory p = _packet(spokeClient, hubClient, 1, bob, carol, 2 ether);
+        _recv(hub, _withDenom(p, "transfer/channel-1/ujuno"));
+        assertEq(carol.balance, 0);
+        assertEq(hub.adapter.escrowed(hubClient), 5 ether);
+
+        hub.adapter.setLegacyDenom(LEGACY, false);
+        _recv(hub, _withDenom(_packet(spokeClient, hubClient, 2, bob, carol, 2 ether), LEGACY));
+        assertEq(carol.balance, 0);
+    }
+
+    function test_LegacyAliasCappedByEscrow() public {
+        _seedLegacy(1 ether);
+        address carol = makeAddr("carol");
+        _recv(hub, _withDenom(_packet(spokeClient, hubClient, 1, bob, carol, 2 ether), LEGACY));
+        assertEq(carol.balance, 0);
+        assertEq(hub.adapter.escrowed(hubClient), 1 ether);
+    }
+
+    function test_LegacyAliasOwnerOnlyAndHubOnly() public {
+        vm.prank(alice);
+        vm.expectRevert();
+        hub.adapter.setLegacyDenom(LEGACY, true);
+        vm.expectRevert();
+        spoke.adapter.setLegacyDenom(LEGACY, true);
+    }
+
     function test_SpokeRejectsVoucherTrace() public {
         IICS26RouterMsgs.Packet memory p = _packet(hubClient, spokeClient, 1, alice, bob, 1 ether);
         _recv(spoke, _withDenom(p, string.concat("transfer/", hubClient, "/ujuno")));

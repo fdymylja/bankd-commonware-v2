@@ -43,10 +43,14 @@ contract ICS20NativeAdapter is IIBCApp, Ownable {
     /// @notice Spoke only: local client ids whose counterparty is the hub.
     mapping(string clientId => bool trusted) public trustedClients;
 
+    /// @notice Hub only: legacy denom traces (e.g. "transfer/channel-0/ujuno") that count as native ujuno coming home.
+    mapping(bytes32 traceHash => bool allowed) public legacyDenoms;
+
     event TransferSent(string clientId, uint64 sequence, address indexed sender, string receiver, uint256 amount);
     event TransferReceived(string clientId, uint64 sequence, address indexed receiver, uint256 amount);
     event TransferRefunded(string clientId, uint64 sequence, address indexed sender, uint256 amount);
     event TrustedClientSet(string clientId, bool trusted);
+    event LegacyDenomSet(string denom, bool allowed);
 
     error OnlyRouter();
     error ZeroAmount();
@@ -73,6 +77,13 @@ contract ICS20NativeAdapter is IIBCApp, Ownable {
     function setTrustedClient(string calldata clientId, bool trusted) external onlyOwner {
         trustedClients[clientId] = trusted;
         emit TrustedClientSet(clientId, trusted);
+    }
+
+    /// @notice Hub only: allow or revoke a legacy voucher trace as native ujuno. Escrow still caps the release.
+    function setLegacyDenom(string calldata denom, bool allowed) external onlyOwner {
+        require(MODE == Mode.Hub, InvalidDenom(denom));
+        legacyDenoms[keccak256(bytes(denom))] = allowed;
+        emit LegacyDenomSet(denom, allowed);
     }
 
     /// @notice Sends msg.value native BRL over `clientId` to `receiver` (0x hex address on the other chain).
@@ -129,7 +140,8 @@ contract ICS20NativeAdapter is IIBCApp, Ownable {
             // over the client it left on. _release caps it at that client's escrow either way.
             bytes32 d = keccak256(bytes(data.denom));
             require(
-                d == DENOM_HASH || d == keccak256(abi.encodePacked("transfer/", msg_.sourceClient, "/", DENOM)),
+                d == DENOM_HASH || d == keccak256(abi.encodePacked("transfer/", msg_.sourceClient, "/", DENOM))
+                    || legacyDenoms[d],
                 InvalidDenom(data.denom)
             );
             _release(msg_.destinationClient, receiver, data.amount * SCALE);
