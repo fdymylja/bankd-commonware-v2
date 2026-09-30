@@ -101,6 +101,10 @@ impl ShieldEngine for BankdShield {
         // The exec lock keeps finalize out, so the checkpoint matches the height.
         self.0.exec().checkpoint().map_err(err)
     }
+
+    fn query(&self, method: &str, request: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+        self.0.exec().query(method, request).map_err(err)
+    }
 }
 
 struct Session {

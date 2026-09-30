@@ -5,6 +5,7 @@
 //! constants tempo needs to anchor the shieldd root in reth state.
 
 mod executor;
+mod query;
 mod records;
 pub mod system;
 

@@ -308,6 +308,16 @@ impl ShieldExecutor {
         self.last_committed.map(|h| (h, self.tip_root))
     }
 
+    /// Reads only finalized state, never a staged execution candidate.
+    pub fn query(&self, method: &str, request: &[u8]) -> Result<Vec<Vec<u8>>, ShieldError> {
+        self.committed().ok_or(ShieldError::NotInitialized)?;
+        run!(
+            self,
+            crate::query::query(self.storage.latest_snapshot(), method, request)
+        )
+        .map_err(ShieldError::from)
+    }
+
     /// Writes a RocksDB checkpoint of finalized state under `home/checkpoints/` and returns
     /// its dir and height. Only finalized blocks are on disk, so a wallet syncing from it
     /// never sees a candidate that could still be dropped.
@@ -702,6 +712,74 @@ mod tests {
         }
         exec.end_block().unwrap();
         exec.seal().unwrap()
+    }
+
+    #[test]
+    fn wallet_queries_only_serve_finalized_compact_blocks() {
+        use prost::Message;
+        use shieldd_sdk_proto::core::{
+            app::v1::AppParametersResponse,
+            component::compact_block::v1::{CompactBlockRangeRequest, CompactBlockRangeResponse},
+        };
+        let (_dir, mut exec) = fresh();
+        let params = exec.query("AppParameters", &[]).unwrap();
+        let params = AppParametersResponse::decode(params[0].as_slice()).unwrap();
+        assert_eq!(params.app_parameters.unwrap().chain_id, "bankd-v2-test");
+        let root = run(&mut exec, B256::ZERO, 1, 1);
+        let request = CompactBlockRangeRequest {
+            start_height: 1,
+            end_height: 1,
+            keep_alive: false,
+        }
+        .encode_to_vec();
+        assert!(
+            exec.query("CompactBlockRange", &request)
+                .unwrap()
+                .is_empty()
+        );
+        exec.finalize(root, 1).unwrap();
+        let blocks = exec.query("CompactBlockRange", &request).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(
+            CompactBlockRangeResponse::decode(blocks[0].as_slice())
+                .unwrap()
+                .compact_block
+                .unwrap()
+                .height,
+            1
+        );
+    }
+
+    #[test]
+    fn wallet_queries_are_bounded_and_read_only() {
+        use prost::Message;
+        use shieldd_sdk_proto::core::component::compact_block::v1::CompactBlockRangeRequest;
+        let (_dir, exec) = fresh();
+        assert!(exec.query("DeliverTx", &[]).is_err());
+        assert!(exec.query("AppParameters", &vec![0; 1_048_577]).is_err());
+        let request = CompactBlockRangeRequest {
+            start_height: 0,
+            end_height: 0,
+            keep_alive: true,
+        }
+        .encode_to_vec();
+        assert!(exec.query("CompactBlockRange", &request).is_err());
+    }
+
+    #[test]
+    fn wallet_key_queries_include_committed_proofs() {
+        use prost::Message;
+        use shieldd_sdk_proto::cnidarium::v1::{KeyValueRequest, KeyValueResponse};
+        let (_dir, exec) = fresh();
+        let request = KeyValueRequest {
+            key: "application/data/chain_id".into(),
+            proof: true,
+        }
+        .encode_to_vec();
+        let response = exec.query("KeyValue", &request).unwrap();
+        let response = KeyValueResponse::decode(response[0].as_slice()).unwrap();
+        assert_eq!(response.value.unwrap().value, b"bankd-v2-test");
+        assert!(response.proof.is_some());
     }
 
     #[test]

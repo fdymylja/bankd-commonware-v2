@@ -23,6 +23,11 @@ shieldd-sdk-proto = { path = "../../shieldd/crates/proto" }
 shieldd-sdk-sct = { path = "../../shieldd/crates/core/component/sct", features = ["component"] }
 shieldd-sdk-shielded-pool = { path = "../../shieldd/crates/core/component/shielded-pool" }
 shieldd-sdk-transaction = { path = "../../shieldd/crates/core/transaction" }
+shieldd-sdk-compact-block = { path = "../../shieldd/crates/core/component/compact-block" }
+shieldd-sdk-compliance = { path = "../../shieldd/crates/core/component/compliance" }
+prost = "0.13.4"
+ibc-proto = { version = "0.51.1", default-features = false }
+futures.workspace = true
 # Patched at the workspace root to the vendored copy (rocksdb 0.24, same as reth).
 cnidarium = { version = "0.83", features = ["migration"] }
 tendermint = { version = "0.40.3", default-features = false }

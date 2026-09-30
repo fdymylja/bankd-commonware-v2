@@ -73,6 +73,11 @@ pub trait ShieldEngine: Send + Sync + Debug {
     fn checkpoint(&self) -> Result<(std::path::PathBuf, u64), String> {
         Err("checkpoints not supported".to_owned())
     }
+
+    /// Bounded protobuf queries against finalized state for browser wallets.
+    fn query(&self, _method: &str, _request: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+        Err("shield queries not supported".to_owned())
+    }
 }
 
 /// Shared handle stored in the EVM config.
