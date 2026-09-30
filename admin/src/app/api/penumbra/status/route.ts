@@ -1,33 +1,13 @@
 import { NextResponse } from 'next/server'
 
-import { penumbraConfig } from '@/lib/config'
-
-/**
- * Proxy endpoint for Penumbra RPC status.
- * Workers can't directly fetch from localhost due to CORS.
- */
+import { rpc } from '@/lib/rpc/server'
 export const dynamic = 'force-dynamic'
-
 export async function GET() {
   try {
-    const response = await fetch(`${penumbraConfig.rpcUrl}/status`, {
-      cache: 'no-store',
-    })
-    
-    if (!response.ok) {
-      return NextResponse.json(
-        { error: `Upstream error: ${response.status}` },
-        { status: response.status }
-      )
-    }
-
-    const data = await response.json()
-    return NextResponse.json(data)
+    const block = await rpc<{ number: string } | null>('eth_getBlockByNumber', ['finalized', false])
+    if (!block) throw new Error('Chain has no finalized block')
+    return NextResponse.json({ height: BigInt(block.number).toString() })
   } catch (error) {
-    console.error('[API] Failed to fetch Shieldd status:', error)
-    return NextResponse.json(
-      { error: 'Failed to connect to Shieldd node' },
-      { status: 502 }
-    )
+    return NextResponse.json({ error: error instanceof Error ? error.message : 'Chain unavailable' }, { status: 502 })
   }
 }

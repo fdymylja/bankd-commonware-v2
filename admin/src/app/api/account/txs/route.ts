@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 import { getAddress } from 'viem'
 
+import { serverPublicClient } from '@/lib/rpc/server'
+
 // Account transaction history, read from the Shinzo indexer's DefraDB.
 //
 // Three tabs, one route:
@@ -157,32 +159,6 @@ async function evmRows(prefix: string, address: string, page: number): Promise<{
   return { rows, hasMore }
 }
 
-async function cosmosRows(bech32: string, page: number): Promise<{ rows: Row[]; hasMore: boolean }> {
-  const offset = (page - 1) * PAGE_SIZE
-  // timestamp is denormalized onto CosmosTx by the feeder, so one POST is enough.
-  const query = `query { txs: CosmosTx(filter: {addresses: {_like: "%${bech32}%"}}, order: {height: DESC}, limit: ${PAGE_SIZE + 1}, offset: ${offset}) { hash height code msg_types timestamp } }`
-  const data = await postGraphql(query)
-  const raw = (data.txs as Array<Record<string, unknown>>) ?? []
-  const hasMore = raw.length > PAGE_SIZE
-  const rows: Row[] = raw.slice(0, PAGE_SIZE).map((t) => ({
-    hash: typeof t.hash === 'string' ? t.hash : undefined,
-    height: toHeight(t.height),
-    code: typeof t.code === 'number' ? t.code : 0,
-    msg_types: typeof t.msg_types === 'string' ? t.msg_types : '',
-    timestamp: toTimestamp(t.timestamp),
-  }))
-  return { rows, hasMore }
-}
-
-// privateRows fetches the ShielddMutationTx rows at a page's heights (known up
-// front from the client's local activity scan) and their block timestamps in one
-// POST. Pagination is done client-side over the heights list, so hasMore is not
-// meaningful here and is left false.
-//
-// HACK(penumbra-migration): the wallet wasm can't scan fork-format notes yet, so
-// the client has no way to learn its own heights. With no heights param we serve
-// the chain-wide ShielddMutationTx list, newest first, so private activity still
-// flows end to end. Remove once the fork-native wallet migration lands.
 async function privateRows(prefix: string, heights: number[], page: number): Promise<{ rows: Row[]; hasMore: boolean }> {
   if (heights.length === 0) {
     const offset = (page - 1) * PAGE_SIZE
@@ -227,6 +203,26 @@ async function privateRows(prefix: string, heights: number[], page: number): Pro
   return { rows, hasMore: false }
 }
 
+// Without an indexer, paginate fixed block windows. Bound both memory and RPC work.
+async function rpcRows(address: string, page: number): Promise<{ rows: Row[]; hasMore: boolean }> {
+  const client = serverPublicClient()
+  const finalized = await client.getBlock({ blockTag: 'finalized' })
+  const end = finalized.number - BigInt((page - 1) * 200)
+  if (end < 0n) return { rows: [], hasMore: false }
+  const start = end > 199n ? end - 199n : 0n
+  const rows: Row[] = []
+  for (let height = end; height >= start; height -= 10n) {
+    const numbers = Array.from({ length: Number(height - start + 1n > 10n ? 10n : height - start + 1n) }, (_, index) => height - BigInt(index))
+    const blocks = await Promise.all(numbers.map(blockNumber => client.getBlock({ blockNumber, includeTransactions: true })))
+    for (const block of blocks) for (const tx of block.transactions) {
+      if (typeof tx === 'string' || (tx.from.toLowerCase() !== address && tx.to?.toLowerCase() !== address)) continue
+      const receipt = await client.getTransactionReceipt({ hash: tx.hash })
+      rows.push({ hash: tx.hash, from: tx.from, to: tx.to ?? undefined, status: receipt.status === 'success', height: Number(block.number), timestamp: block.timestamp.toString() })
+    }
+  }
+  return { rows, hasMore: start > 0n }
+}
+
 export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams
   const tab = parseTab(params.get('tab'))
@@ -246,13 +242,14 @@ export async function GET(request: NextRequest) {
       if (!HEX_ADDRESS.test(address)) {
         return NextResponse.json({ error: 'Invalid hex address' }, { status: 400 })
       }
-      result = await evmRows(prefix, address, page)
+      if (process.env.SHINZO_GRAPHQL_URLS || process.env.SHINZO_GRAPHQL_URL) result = await evmRows(prefix, address, page)
+      else result = await rpcRows(address, page)
     } else if (tab === 'cosmos') {
       const address = params.get('address') ?? ''
       if (!BECH32_ADDRESS.test(address)) {
         return NextResponse.json({ error: 'Invalid bech32 address' }, { status: 400 })
       }
-      result = await cosmosRows(address, page)
+      return NextResponse.json({ error: 'Cosmos transactions are unavailable on Commonware' }, { status: 501 })
     } else {
       let heights: number[]
       try {
@@ -260,7 +257,7 @@ export async function GET(request: NextRequest) {
       } catch {
         return NextResponse.json({ error: 'Invalid heights' }, { status: 400 })
       }
-      result = await privateRows(prefix, heights, page)
+      result = process.env.SHINZO_GRAPHQL_URLS || process.env.SHINZO_GRAPHQL_URL ? await privateRows(prefix, heights, page) : { rows: [], hasMore: false }
     }
 
     return NextResponse.json({

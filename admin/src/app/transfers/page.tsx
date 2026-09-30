@@ -1,7 +1,6 @@
 'use client'
 
 import { MsgSend } from '@bankd/shared/proto/cosmos/bank/v1beta1/tx'
-import { MsgConvertERC20 } from '@bankd/shared/proto/cosmos/evm/erc20/v1/tx'
 import { MsgDeposit } from '@bankd/shared/shieldd/msg-deposit'
 import { useQueryClient } from '@tanstack/react-query'
 import { useCallback,useEffect,useMemo,useState } from 'react'
@@ -22,7 +21,7 @@ import {
 } from '@/hooks'
 import { usePrivateTransferQueue } from '@/hooks/usePrivateTransferQueue'
 import { chainConfig } from '@/lib/config'
-import { queryKeys, TokenBalance } from '@/lib/cosmos'
+import { TokenBalance, queryKeys } from '@/lib/cosmos'
 import { assertBroadcast,executeTx,isProposedResult } from '@/lib/evm'
 import { guardSafeUnsupported,useActiveAccount } from '@/lib/multisig'
 import { generateAndSaveEphemeralAddressRecord,useNativeWallet } from '@/lib/native-wallet'
@@ -785,29 +784,9 @@ async function handleShield(
     toastId,
   } as any
 
-  if (token.erc20Address && !isNativeAlias) {
-    // ERC20 balances live in the contract; the Shieldd deposit spends bank
-    // coins, so convert first (same as the assets page's shield modal).
-    const [, transferResult] = await executeTx(
-      queryClient,
-      {
-        msg: MsgConvertERC20,
-        values: {
-          contractAddress: token.erc20Address,
-          amount: amountInMinDenom,
-          receiver: senderBech32,
-          sender: senderHex,
-        },
-        successMessage: 'Converted to native token',
-        toastId,
-      } as any,
-      transferStep
-    )
-    assertBroadcast(transferResult)
-  } else {
-    const [transferResult] = await executeTx(queryClient, transferStep)
-    assertBroadcast(transferResult)
-  }
+  if (token.erc20Address && !isNativeAlias) throw new Error('The Commonware shielded pool accepts native BRL only.')
+  const [transferResult] = await executeTx(queryClient, transferStep)
+  assertBroadcast(transferResult)
 
   toast.success(`Shielded ${amount} ${token.symbol}`, { id: toastId })
   return 'Shielded'

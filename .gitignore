@@ -50,3 +50,6 @@ node_modules/
 admin/data/
 playwright-report/
 test-results/
+
+# Rebuilt from the pinned browser SDK crate
+packages/shieldd-web/wasm/

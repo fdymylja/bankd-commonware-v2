@@ -15,7 +15,10 @@
     "test:multisig": "tsx --test src/lib/multisig/*.test.ts",
     "test:safe": "tsx --test src/lib/safe/*.test.ts",
     "e2e:regulated": "node e2e/regulated-asset-registration.mjs",
-    "test:sdk-capabilities": "node --test e2e/browser-sdk-contract.mjs"
+    "test:sdk-capabilities": "node --test e2e/browser-sdk-contract.mjs",
+    "test:commonware": "node --import tsx --test src/lib/commonware/*.test.ts ../packages/shieldd-web/src/*.test.ts ../packages/shared/src/chain/*.test.ts src/lib/native-wallet/penumbra/embedded-shieldd.test.ts",
+    "e2e:commonware": "node e2e/commonware.mjs",
+    "test:sdk-commonware": "node --test ../packages/shieldd-web/scripts/sdk-contract.test.mjs"
   },
   "dependencies": {
     "@bankd/shared": "workspace:*",
@@ -33,7 +36,7 @@
     "@mizufinance/bech32m": "https://github.com/mizufinance/penumbra-web/releases/download/bankd-demo.1/mizufinance-bech32m-18.0.1-bankd-demo.1.tgz",
     "@mizufinance/protobuf": "file:vendor/mizufinance-protobuf-11.0.1-bankd-demo.14.tgz",
     "@mizufinance/types": "https://github.com/mizufinance/penumbra-web/releases/download/bankd-demo.1/mizufinance-types-36.0.1-bankd-demo.1.tgz",
-    "@mizufinance/wasm": "file:vendor/mizufinance-wasm-53.0.1-bankd-demo.19.tgz",
+    "@mizufinance/wasm": "file:vendor/mizufinance-wasm-53.0.1-bankd-commonware.1.tgz",
     "@noble/curves": "1.9.1",
     "@noble/hashes": "1.8.0",
     "@react-native-async-storage/async-storage": "^2.2.0",
@@ -68,7 +71,8 @@
     "sigma": "^3.0.3",
     "viem": "^2.45.0",
     "wagmi": "^3.4.1",
-    "zustand": "4.5.5"
+    "zustand": "4.5.5",
+    "@bankd/shieldd-web": "workspace:*"
   },
   "devDependencies": {
     "@cosmology/telescope": "^2.1.0",

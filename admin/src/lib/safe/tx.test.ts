@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import { BANK_SEND_ABI, BANK_SEND_ADDRESS } from '@bankd/shared/evm/bankd'
 import { MsgSend } from 'cosmjs-types/cosmos/bank/v1beta1/tx'
-import { type Hex, bytesToHex, decodeFunctionData, encodeFunctionData, hexToBytes } from 'viem'
+import { type Hex, decodeFunctionData, getAddress } from 'viem'
+
+import { hexToBech32 } from '@/lib/utils'
 
 import {
   AUTHORITY_MODULE_ADDRESS,
-  AUTHORITY_MSGEXEC_TYPE,
   CREATE_CALL_ADDRESS,
-  MSGEXEC_ABI,
-  MSGEXEC_PRECOMPILE_ADDRESS,
   MULTISEND_ABI,
   MULTISEND_CALL_ONLY_ADDRESS,
   ZERO_ADDRESS,
@@ -21,7 +21,6 @@ import {
   buildDeploy,
   buildMultiSend,
   buildNativeSend,
-  buildRawSafeTx,
   decodeAuthorityMsgExec,
   encodeAuthorityMsgExec,
   encodeMultiSendTransactions,
@@ -33,17 +32,6 @@ const SAFE = '0x1111111111111111111111111111111111111111'
 const SAFE_BECH32 = 'wallet1zg3g2eqzm3twzefsmakn6t7fjuedqmt3qm5z3r'
 const TO_HEX = '0x00000000000000000000000000000000000000aa'
 const TO_BECH32 = 'wallet1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq2tq6ku'
-
-/** Pull `execute(typeUrl, value)` back out of Safe calldata. */
-function decodeExecute(data: `0x${string}`): {
-  typeUrl: string
-  value: Uint8Array
-} {
-  const decoded = decodeFunctionData({ abi: MSGEXEC_ABI, data })
-  assert.equal(decoded.functionName, 'execute')
-  const [typeUrl, valueHex] = decoded.args as [string, `0x${string}`]
-  return { typeUrl, value: hexToBytes(valueHex) }
-}
 
 test('buildNativeSend: raw value transfer, CALL, no refund', () => {
   const tx = buildNativeSend({ to: TO_HEX, valueWei: '1000000000000', nonce: '5' })
@@ -59,53 +47,14 @@ test('buildNativeSend: raw value transfer, CALL, no refund', () => {
   assert.equal(tx.nonce, '5')
 })
 
-test('buildCosmosSend: targets msgexec, wraps a MsgSend', () => {
-  const tx = buildCosmosSend({
-    fromBech32: SAFE_BECH32,
-    toBech32: TO_BECH32,
-    denom: 'ubrl',
-    amount: '1000000',
-    nonce: '0',
-  })
-  assert.equal(tx.to.toLowerCase(), MSGEXEC_PRECOMPILE_ADDRESS.toLowerCase())
+test('legacy native send intent uses the BankSend precompile', () => {
+  const tx = buildCosmosSend({ fromBech32: SAFE_BECH32, toBech32: hexToBech32(TO_HEX), denom: 'abrl', amount: '1000000000000000000', nonce: '0' })
+  assert.equal(tx.to, BANK_SEND_ADDRESS)
   assert.equal(tx.value, '0')
-
-  const { typeUrl, value } = decodeExecute(tx.data)
-  assert.equal(typeUrl, '/cosmos.bank.v1beta1.MsgSend')
-  const msg = MsgSend.decode(value)
-  assert.equal(msg.fromAddress, SAFE_BECH32)
-  assert.equal(msg.toAddress, TO_BECH32)
-  assert.deepEqual(msg.amount, [{ denom: 'ubrl', amount: '1000000' }])
-})
-
-test('buildRawSafeTx: wrapping an encoded MsgSend matches buildCosmosSend', () => {
-  // The executeTx Safe branch ABI-encodes a Class-A MsgSend step the same way
-  // convertMsgExecStep does, then wraps it with buildRawSafeTx. The result must
-  // be byte-identical to the dedicated buildCosmosSend helper.
-  const msg = MsgSend.fromPartial({
-    fromAddress: SAFE_BECH32,
-    toAddress: TO_BECH32,
-    amount: [{ denom: 'ubrl', amount: '1000000' }],
-  })
-  const data = encodeFunctionData({
-    abi: MSGEXEC_ABI,
-    functionName: 'execute',
-    args: ['/cosmos.bank.v1beta1.MsgSend', bytesToHex(MsgSend.encode(msg).finish())],
-  })
-  const raw = buildRawSafeTx({
-    to: MSGEXEC_PRECOMPILE_ADDRESS as Hex,
-    value: '0',
-    data,
-    nonce: '0',
-  })
-  const dedicated = buildCosmosSend({
-    fromBech32: SAFE_BECH32,
-    toBech32: TO_BECH32,
-    denom: 'ubrl',
-    amount: '1000000',
-    nonce: '0',
-  })
-  assert.deepEqual(raw, dedicated)
+  const decoded = decodeFunctionData({ abi: BANK_SEND_ABI, data: tx.data })
+  assert.equal(decoded.functionName, 'send')
+  assert.deepEqual(decoded.args, [getAddress(TO_HEX), 1000000000000000000n])
+  assert.throws(() => buildCosmosSend({ fromBech32: SAFE_BECH32, toBech32: TO_BECH32, denom: 'ubrl', amount: '1', nonce: '0' }))
 })
 
 test('encodeAuthorityMsgExec round-trips sender + inner Any', () => {
@@ -125,26 +74,8 @@ test('encodeAuthorityMsgExec round-trips sender + inner Any', () => {
   assert.deepEqual(inner.value, innerValue)
 })
 
-test('buildAuthoritySend: outer sender=Safe, inner signer=authority module', () => {
-  const tx = buildAuthoritySend({
-    safeBech32: SAFE_BECH32,
-    toBech32: TO_BECH32,
-    denom: 'ubrl',
-    amount: '42',
-    nonce: '3',
-  })
-  assert.equal(tx.to.toLowerCase(), MSGEXEC_PRECOMPILE_ADDRESS.toLowerCase())
-
-  const { typeUrl, value } = decodeExecute(tx.data)
-  assert.equal(typeUrl, AUTHORITY_MSGEXEC_TYPE)
-
-  const { sender, inner } = decodeAuthorityMsgExec(value)
-  // Outer MsgExec.sender must be the Safe (msgexec checks caller == sender).
-  assert.equal(sender, SAFE_BECH32)
-  // Inner msg's signer must be the authority module, not the Safe.
-  const innerMsg = MsgSend.decode(inner.value)
-  assert.equal(innerMsg.fromAddress, AUTHORITY_MODULE_ADDRESS)
-  assert.equal(innerMsg.toAddress, TO_BECH32)
+test('removed authority-module send cannot produce a proposal', () => {
+  assert.throws(() => buildAuthoritySend({ safeBech32: SAFE_BECH32, toBech32: TO_BECH32, denom: 'abrl', amount: '42', nonce: '3' }), /unavailable on Commonware/)
 })
 
 test('buildChangeThreshold: self-call on the Safe', () => {

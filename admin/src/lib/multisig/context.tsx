@@ -29,7 +29,6 @@ import {
   type SafeMemberSignatureBlob,
   type SafeTx,
   buildAddOwner,
-  buildAuthoritySend,
   buildChangeThreshold,
   buildCosmosSend,
   buildNativeSend,
@@ -450,11 +449,10 @@ export function MultisigProvider({ children }: { children: ReactNode }) {
 
   const fundMultisig = useCallback(
     async (amount: string): Promise<BroadcastResult> => {
-      if (!activeMultisig?.cosmosAddress) {
-        throw new Error('No active cosmos multisig')
-      }
+      const recipient = activeSafe?.safeAddress ?? activeMultisig?.cosmosAddress
+      if (!recipient) throw new Error('No active Safe')
       const result = await fundFromPersonal({
-        toAddress: activeMultisig.cosmosAddress,
+        toAddress: recipient,
         amount,
       })
       if (result.code === 0) await refresh()
@@ -466,7 +464,7 @@ export function MultisigProvider({ children }: { children: ReactNode }) {
         gasWanted: result.gasWanted?.toString() ?? '',
       }
     },
-    [activeMultisig, refresh]
+    [activeSafe, activeMultisig, refresh]
   )
 
   const deletePending = useCallback(
@@ -515,17 +513,7 @@ export function MultisigProvider({ children }: { children: ReactNode }) {
           summary = `Cosmos send ${input.amount}${denom} to ${input.toBech32}`
           break
         }
-        case 'authority-send': {
-          safeTx = buildAuthoritySend({
-            safeBech32,
-            toBech32: input.toBech32,
-            denom,
-            amount: input.amount,
-            nonce,
-          })
-          summary = `Authority send ${input.amount}${denom} to ${input.toBech32}`
-          break
-        }
+        case 'authority-send': throw new Error('Authority module sends are unavailable on Commonware; propose an explicit contract call instead')
         case 'add-owner': {
           safeTx = buildAddOwner({
             safeAddress,

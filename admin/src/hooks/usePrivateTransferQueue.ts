@@ -14,7 +14,7 @@ import {
   updatePrivateTransferJob,
 } from '@/lib/native-wallet'
 import { hostWithdraw } from '@/lib/penumbra'
-import { formatTokenAmount,hexToBech32 } from '@/lib/utils'
+import { formatTokenAmount } from '@/lib/utils'
 
 export interface PrivateTransferQueueInput {
   amount: string
@@ -92,21 +92,8 @@ async function waitForSpendableBalance(job: PrivateTransferJobRecord): Promise<v
 }
 
 async function waitForPrivateWalletSync(minHeight?: bigint) {
-  const { getPenumbraWalletSyncStatus } = await import('@/lib/native-wallet/penumbra/services/view-server-sync')
-  const deadline = Date.now() + 60_000
-
-  while (Date.now() < deadline) {
-    const status = await getPenumbraWalletSyncStatus()
-    const current = BigInt(status.currentHeight)
-    const target = BigInt(status.chainHeight)
-    const reachedConfirmation = minHeight === undefined || current >= minHeight
-    const reachedTip = target === 0n || current >= target - 1n
-
-    if (reachedConfirmation && reachedTip) return
-    await new Promise((resolve) => setTimeout(resolve, 1_000))
-  }
-
-  throw new Error('Private wallet syncing')
+  const { assertPenumbraWalletSynced } = await import('@/lib/native-wallet/penumbra/services/view-server-sync')
+  await assertPenumbraWalletSynced(minHeight)
 }
 
 async function runPrivateSend(job: PrivateTransferJobRecord): Promise<bigint | undefined> {
@@ -159,12 +146,11 @@ async function runPrivateSend(job: PrivateTransferJobRecord): Promise<bigint | u
 }
 
 async function runPrivateWithdraw(job: PrivateTransferJobRecord): Promise<bigint | undefined> {
-  const destAddress = job.recipient.startsWith('0x') ? hexToBech32(job.recipient) : job.recipient
   const assetId = job.asset.id.replace(/^private:/, '').split(':')[0]
   const result = await hostWithdraw({
     amount: BigInt(job.amountBaseUnits),
     assetId: hexToBytes(assetId as `0x${string}`),
-    destinationAddress: destAddress,
+    destinationAddress: job.recipient,
     sourceAddressIndex: job.asset.sourceAccount ?? 0,
   })
 

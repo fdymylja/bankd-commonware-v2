@@ -236,9 +236,9 @@ function AccountView() {
       remaining = REFRESH_SECONDS
       setCountdown(REFRESH_SECONDS)
       try {
-        const res = await fetch(`${chainConfig.rpc}/status`, { cache: 'no-store' })
+        const res = await fetch('/api/penumbra/status', { cache: 'no-store' })
         const body = await res.json()
-        const h = Number(body?.result?.sync_info?.latest_block_height)
+        const h = Number(body?.height)
         if (Number.isFinite(h) && h !== lastHeightRef.current) {
           lastHeightRef.current = h
           setRefreshTick((t) => t + 1)
@@ -270,11 +270,6 @@ function AccountView() {
       const jobs: Promise<{ rows: Row[]; hasMore: boolean }>[] = []
       if (identity.hex) {
         jobs.push(fetchRows(`/api/account/txs?tab=evm&page=${page}&address=${encodeURIComponent(identity.hex)}`, 'evm'))
-      }
-      if (identity.bech32) {
-        jobs.push(
-          fetchRows(`/api/account/txs?tab=cosmos&page=${page}&address=${encodeURIComponent(identity.bech32)}`, 'cosmos')
-        )
       }
       // HACK(penumbra-migration): no FVK note scan until the fork-native wallet
       // lands, so private rows are the chain-wide indexer list, not per-wallet.
@@ -416,9 +411,9 @@ function HeaderStats({ hex, bech32 }: { hex?: string; bech32?: string }) {
     let cancelled = false
     async function tick() {
       try {
-        const res = await fetch(`${chainConfig.rpc}/status`, { cache: 'no-store' })
+        const res = await fetch('/api/penumbra/status', { cache: 'no-store' })
         const body = await res.json()
-        const h = Number(body?.result?.sync_info?.latest_block_height)
+        const h = Number(body?.height)
         if (!cancelled && Number.isFinite(h)) setHeight(h)
       } catch {
         // node unreachable; keep the last known height

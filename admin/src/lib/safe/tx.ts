@@ -1,29 +1,15 @@
-// src/lib/safe/tx.ts
-/**
- * SafeTx builders. Each returns a fully-formed {@link SafeTx} against a given
- * Safe nonce; the caller computes the on-chain hash (see chain.ts) and stores
- * it. No secrets touch this file - it's pure encoding.
- *
- * Targets:
- *  - native send   -> to=recipient, data=0x
- *  - cosmos msg     -> to=MSGEXEC precompile, data=execute(typeUrl, protoBytes)
- *  - authority exec -> same, but the inner msg is wrapped in authority MsgExec
- *  - owner mgmt     -> to=Safe self, data=addOwnerWithThreshold|changeThreshold
- * All use operation=0 (CALL) and zero gas refund fields.
- */
-
+import { evmAddress } from '@bankd/shared/chain/client'
+import { BANK_SEND_ABI, BANK_SEND_ADDRESS } from '@bankd/shared/evm/bankd'
 import { BinaryReader, BinaryWriter } from 'cosmjs-types/binary'
 import { MsgSend } from 'cosmjs-types/cosmos/bank/v1beta1/tx'
 import { Any } from 'cosmjs-types/google/protobuf/any'
-import { type Hex, concatHex, encodeFunctionData, encodePacked, size, toHex } from 'viem'
+import { type Hex, concatHex, encodeFunctionData, encodePacked, size } from 'viem'
 
 import {
   AUTHORITY_MODULE_ADDRESS,
   AUTHORITY_MSGEXEC_TYPE,
   CREATE_CALL_ABI,
   CREATE_CALL_ADDRESS,
-  MSGEXEC_ABI,
-  MSGEXEC_PRECOMPILE_ADDRESS,
   MULTISEND_ABI,
   MULTISEND_CALL_ONLY_ADDRESS,
   SAFE_ABI,
@@ -164,17 +150,7 @@ export function buildCosmosMsg(input: {
   protoValue: Uint8Array
   nonce: string
 }): SafeTx {
-  const data = encodeFunctionData({
-    abi: MSGEXEC_ABI,
-    functionName: 'execute',
-    args: [input.typeUrl, toHex(input.protoValue)],
-  })
-  return baseSafeTx({
-    to: MSGEXEC_PRECOMPILE_ADDRESS as Hex,
-    value: '0',
-    data,
-    nonce: input.nonce,
-  })
+  throw new Error(`Cosmos message execution is unavailable on Commonware: ${input.typeUrl}`)
 }
 
 /** A cosmos bank MsgSend from the Safe's own cosmos address, via msgexec. */
@@ -186,16 +162,8 @@ export function buildCosmosSend(input: {
   amount: string
   nonce: string
 }): SafeTx {
-  const msg: MsgSend = {
-    fromAddress: input.fromBech32,
-    toAddress: input.toBech32,
-    amount: [{ denom: input.denom, amount: input.amount }],
-  }
-  return buildCosmosMsg({
-    typeUrl: MSG_SEND_TYPE,
-    protoValue: MsgSend.encode(msg).finish(),
-    nonce: input.nonce,
-  })
+  if (input.denom !== 'abrl' || BigInt(input.amount) <= 0n) throw new Error('Native BRL requires positive abrl units')
+  return baseSafeTx({ to: BANK_SEND_ADDRESS, value: '0', data: encodeFunctionData({ abi: BANK_SEND_ABI, functionName: 'send', args: [evmAddress(input.toBech32), BigInt(input.amount)] }), nonce: input.nonce })
 }
 
 /**

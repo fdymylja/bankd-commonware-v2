@@ -8,7 +8,7 @@ const nextConfig = {
   // Two dev servers sharing .next corrupt each other's route manifests; set
   // NEXT_DIST_DIR for secondary instances (e.g. e2e verification servers).
   distDir: process.env.NEXT_DIST_DIR || '.next',
-  transpilePackages: ['@bankd/shared'],
+  transpilePackages: ['@bankd/shared', '@bankd/shieldd-web'],
   experimental: {
     instrumentationHook: true,
     cpus: 2,

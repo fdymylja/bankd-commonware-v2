@@ -11,7 +11,7 @@ export function formatTokenAmount(
   decimals: number = chainConfig.decimals
 ): string {
   const value = BigInt(amount)
-  const divisor = BigInt(10 ** decimals)
+  const divisor = 10n ** BigInt(decimals)
   const wholePart = value / divisor
   const fractionalPart = value % divisor
 

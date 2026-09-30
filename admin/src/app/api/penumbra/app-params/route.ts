@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 
 import { penumbraConfig } from '@/lib/config'
 import { embeddedShielddQueryUrl } from '@/lib/native-wallet/penumbra/embedded-shieldd'
+import { shielddFetch as fetch } from '@/lib/rpc/shieldd'
 
 export const dynamic = 'force-dynamic'
 

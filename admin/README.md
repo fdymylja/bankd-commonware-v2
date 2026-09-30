@@ -1,61 +1,95 @@
-# Admin Panel UI
+# Bankd Commonware admin
 
-## Run UI
+The admin and shared frontend packages live in this monorepo and use the node's
+EVM RPC and embedded Shieldd. See [the migration breakdown](../docs/ADMIN-MIGRATION.md)
+for supported operations, SDK provenance and differences from the Cosmos admin.
 
-```bash
-pnpm install && pnpm dev
+## Run locally
 
-pnpm install && pnpm build && pnpm start
-```
-
-## Run Backend
+Initialize submodules and install dependencies from the repository root:
 
 ```bash
-just local-image
-CLEAN=true just compose-up
+git submodule update --init --recursive
+pnpm install --frozen-lockfile
 ```
 
-## Regulated assets and disclosures
+Start a disposable chain using the repository's Rust toolchain. `IBC_MODE=none`
+is sufficient for public/private BRL, administration and ordinary EVM use:
 
-The registration page accepts complete authority-issued registration JSON.
-Asset policy includes four independently provisioned encryption key families
-(amount, sender address, receiver address and ownership checking) and an epoch.
-User registrations retain ordinary capability/nullifier authorization. New
-protected-key provisioning requires upstream work; development keys are synthetic.
+```bash
+IBC_MODE=none scripts/bankd/localnet.sh up 9001 8545 9000 1
+```
 
-Audit review uses the local `disclosure-audit` client and direct Defra operations.
-The audit page shows instructions. See [the prototype guide](../infra/disclosure-audit/README.md)
-and [capability register](../infra/disclosure-audit/GAPS.md). The fixture is for
-trusted local testers only, with NAC disabled; connected clients can administer
-the database. Live PET collection and protected delivery are unavailable.
+In a second terminal, start the browser prover. This builds the Go daemon and
+HTTP bridge against the same Shieldd artifacts used by the node:
 
-### Browser/mobile SDK
+```bash
+scripts/bankd/prover.sh --warm transfer
+```
 
-The bundled development SDK supports PET-ready transactions. See the
-[SDK verification guide](../tests/e2e/SDK.md) for package provenance, reset
-instructions and real browser/WebView transaction checks.
+In a third terminal, start the frontend:
 
-### SCT diagnostics
+```bash
+BANKD_RPC_URL=http://127.0.0.1:8545 pnpm admin:dev
+```
 
-If the native wallet reports "provided anchor is not a valid SCT root" (or the sync self-heal keeps firing), two Node harnesses in `scripts/` run the real `@mizufinance/wasm` ViewServer outside the browser and compare local SCT roots against the chain's canonical anchors:
+Open http://localhost:34562. The generated localnet funds the standard development
+wallet `test test test test test test test test test test test junk`; import it
+through the native wallet dialog. This public seed is only for disposable localnets.
 
-- `pnpm sct:roundtrip [--max=H]` - scans compact blocks from the node, replicates the app's incremental persist/reload pipeline, and checks that the live root, reloaded root, and chain anchor all agree. Pinpoints whether a divergence is in scanning, persistence, or reload.
-- `pnpm sct:snapshot-check [--max=H]` - byte-compares the snapshot chunks the dev server serves against the chain's compact blocks (duplicates, gaps, mismatches), then scans the snapshot-sourced blocks and checks the resulting root against the chain anchor. This caught the chunk-boundary duplication bug.
+`BANKD_RPC_URL` is a server setting. The browser uses the same-origin `/api/rpc`
+gateway and `/api/shieldd` query bridge, so changing the node port does not require
+rebuilding the browser. Private proofs use `http://127.0.0.1:8090/prove`; set
+`NEXT_PUBLIC_PENUMBRA_PROVER_URL` before building to use another local prover.
+The prover binds to loopback by default and accepts private witnesses; run it
+only in a trusted development environment.
 
-Both are read-only and safe against a live stack. Useful after any `@mizufinance/wasm` version bump or Shieldd chain upgrade.
+To exercise IBC, start the base PR's hub/spoke localnet and relayer instead of
+`IBC_MODE=none`. The Network page discovers the actual deployed router clients;
+it does not create clients or run a relayer.
 
-## Accounts
+## Build and verify
 
-- acc0 & acc1 from the sh-testnet file script in metamask
-  - Add Wallet & import account with private key `bankd keys unsafe-export-eth-key acc0` / acc1
+```bash
+pnpm admin:build
+pnpm shared:typecheck
+pnpm admin:test
+pnpm --filter bankd-admin test:safe
+pnpm --filter bankd-admin test:sdk-commonware
+pnpm --filter bankd-admin exec tsc --noEmit
+BANKD_RPC_URL=http://127.0.0.1:8545 pnpm --filter bankd-admin e2e:commonware
+```
 
-- acc0 in PRAX (the Shieldd wallet extension)
-  - point the wallet network at bankd's own gRPC, `http://localhost:11317`, chain id
-    `9001`. Shieldd is embedded, so there is no separate node on `:8080`. Same values
-    as `admin/.env.development`.
+The browser check submits real transactions against a disposable localnet and
+requires the admin and prover running. Set `E2E_PRIVATE=0` to skip private proofs
+and `E2E_ADMIN=0` to skip the administration transactions. Logs/screenshots go to
+`/tmp/bankd-admin-browser` by default.
 
-### Contract inventory authorization
+## Browser SDK
 
-The admin contract inventory is mine-only and binds the trusted supervisor subject to an EVM wallet. In production, set `SUPERVISOR_TRUST_PROXY_AUTH=true`; the authenticating proxy must strip inbound `x-supervisor-subject` and `x-supervisor-wallet` headers and inject verified values. Local use is denied by default and requires `CONTRACTS_DEV_AUTH=true`, `CONTRACTS_DEV_SUBJECT`, and `CONTRACTS_DEV_WALLET`. Development identity is server-only and request headers cannot override it.
+The committed Commonware SDK tarball is sufficient to run the frontend. Rebuild
+only after changing the pinned Shieldd SDK or browser Rust wrapper:
 
-`SHINZO_GRAPHQL_URLS` is an ordered, server-controlled registry matching `supervisor-indexer-policy.json` indexer order. Production endpoints must use HTTPS. Inventory agreement accepts a BlockSignature identity only when it matches the identity statically bound to that authenticated endpoint; an endpoint cannot claim another registered signer. The returned `complete` flag is historical only when indexing starts at height 0; `indexedRangeComplete` describes completeness within the reported indexed range.
+```bash
+rustup target add wasm32-unknown-unknown
+# Install wasm-pack separately if it is not already available.
+pnpm --filter @bankd/shieldd-web sdk:build
+pnpm install --force --no-frozen-lockfile
+pnpm --filter bankd-admin test:sdk-commonware
+```
+
+The crate links directly to `shieldd/` in this repository. Its independent Cargo
+lock and the tarball's `build-provenance.json` record the build inputs. Development
+proof keys require the development WASM profile used here.
+
+## Optional services
+
+The base PR does not include the old Cosmos disclosure grants, supervisor metrics
+backend or Shinzo indexers. Set `BANKD_DISCLOSURE_URL` only when a compatible
+disclosure service exists; unconfigured protected access is denied. Contract
+inventory and private indexed history require authenticated Shinzo services.
+Public account history has a bounded finalized EVM RPC fallback.
+
+Existing deployed Safe accounts can be attached by address. Safe batches and
+contract creation also require the corresponding MultiSend/CreateCall helpers
+deployed on the target chain; the localnet does not preinstall them.

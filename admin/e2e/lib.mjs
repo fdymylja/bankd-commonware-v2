@@ -1,6 +1,5 @@
 // Shared helpers for the admin browser e2e scripts.
 import { createRequire } from 'node:module'
-import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
@@ -11,7 +10,7 @@ export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..
 export const ADMIN_URL = process.env.ADMIN_URL ?? 'http://localhost:34562'
 export const MNEMONIC =
   process.env.MNEMONIC ??
-  readFileSync(resolve(REPO_ROOT, 'infra/accounts/acc0'), 'utf8').trim()
+  'test test test test test test test test test test test junk'
 export const PASSWORD = 'e2e-test-password-1'
 
 export const log = (msg) => console.log(`[${new Date().toISOString()}] ${msg}`)

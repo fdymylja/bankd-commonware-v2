@@ -49,7 +49,7 @@ import { SHIELDD_BASE_DENOM } from '../protocol'
 // =============================================================================
 
 export interface TransactionServiceConfig {
-  /** gRPC-web proxy URL for chain queries and broadcast */
+  /** gRPC-web proxy URL for chain queries */
   grpcUrl: string
   /** Chain ID */
   chainId: string
@@ -396,7 +396,7 @@ export interface ConfirmationConfig {
 }
 
 /**
- * Poll for transaction confirmation using Tendermint RPC.
+ * Wait for a successful EVM receipt to reach the finalized block height.
  */
 async function pollForConfirmation(
   txHash: string,
@@ -412,36 +412,30 @@ async function pollForConfirmation(
   const pollInterval = config.pollInterval ?? 2000
   const startTime = Date.now()
 
-  // Format hash for Tendermint RPC (needs 0x prefix)
+  // The Commonware envelope hash is the EVM receipt identifier.
   const formattedHash = txHash.startsWith('0x') ? txHash : `0x${txHash}`
 
   console.log(`[Transaction] Waiting for confirmation...`)
 
   while (Date.now() - startTime < timeout) {
     try {
-      const response = await fetch(`${rpcUrl}/tx?hash=${formattedHash}`)
-
-      // Skip non-OK responses silently (500s during indexing are expected)
-      if (!response.ok) {
-        await new Promise((resolve) => setTimeout(resolve, pollInterval))
-        continue
-      }
-
+      const response = await fetch(rpcUrl, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getTransactionReceipt', params: [formattedHash] }),
+      })
+      if (!response.ok) throw new Error(`RPC returned HTTP ${response.status}`)
       const data = await response.json()
-
-      if (data.result?.tx_result) {
-        // Transaction found and executed
-        const txResult = data.result.tx_result
-        const height = data.result.height
-
-        if (txResult.code === 0) {
-          console.log(`[Transaction] Confirmed at height ${height}`)
-          return { confirmed: true, height: parseInt(height, 10) }
-        } else {
-          // Transaction failed
-          const errorLog = txResult.log || `Code: ${txResult.code}`
-          console.error(`[Transaction] Failed:`, errorLog)
-          return { confirmed: false, rejected: true, error: errorLog }
+      if (data.error) throw new Error(data.error.message)
+      const receipt = data.result
+      if (receipt) {
+        if (receipt.status === '0x0') return { confirmed: false, rejected: true, error: 'Shieldd transaction reverted' }
+        const finalizedResponse = await fetch(rpcUrl, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getBlockByNumber', params: ['finalized', false] }),
+        })
+        const finalized = await finalizedResponse.json()
+        if (finalized.result && BigInt(finalized.result.number) >= BigInt(receipt.blockNumber)) {
+          return { confirmed: true, height: Number(BigInt(receipt.blockNumber)) }
         }
       }
 
@@ -459,7 +453,7 @@ async function pollForConfirmation(
 }
 
 /**
- * Broadcast a transaction to the chain via gRPC-web.
+ * Broadcast the native Shieldd envelope through the EVM JSON-RPC endpoint.
  */
 export async function broadcastTransaction(
   transaction: Transaction,
@@ -471,38 +465,17 @@ export async function broadcastTransaction(
   try {
     const bankdTxBytes = wrapShielddTransaction(transaction.toBinary())
     const bankdTxHex = `0x${Buffer.from(bankdTxBytes).toString('hex')}`
-    const response = await fetch(
-      `${penumbraConfig.rpcUrl}/broadcast_tx_sync?tx=${bankdTxHex}`
-    )
-
-    if (!response.ok) {
-      const errorText = await response.text()
-      console.error('[Transaction] Broadcast failed:', errorText)
-      return {
-        hash: '',
-        success: false,
-        error: `Broadcast failed: ${response.status} ${response.statusText}`,
-      }
-    }
-
+    const response = await fetch(penumbraConfig.rpcUrl, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_sendRawTransaction', params: [bankdTxHex] }),
+    })
+    if (!response.ok) throw new Error(`Broadcast failed: HTTP ${response.status}`)
     const broadcastResponse = await response.json()
     if (broadcastResponse.error) {
-      throw new Error(
-        broadcastResponse.error.message ??
-          JSON.stringify(broadcastResponse.error)
-      )
+      return { hash: '', success: false, rejected: true, error: broadcastResponse.error.message || 'Shieldd transaction rejected' }
     }
-    const hash = broadcastResponse.result?.hash ?? ''
-    const code = Number(broadcastResponse.result?.code ?? 0)
-    const log = broadcastResponse.result?.log ?? ''
-    if (code !== 0) {
-      return {
-        hash,
-        success: false,
-        rejected: true,
-        error: `Broadcast failed: ${log || `code ${code}`}`,
-      }
-    }
+    const hash = broadcastResponse.result
+    if (typeof hash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(hash)) throw new Error('RPC returned no transaction hash')
 
     console.log('[Transaction] Broadcast successful, hash:', hash)
     if (!awaitConfirmation || !hash) return { hash, success: true }

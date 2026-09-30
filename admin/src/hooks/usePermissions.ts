@@ -1,9 +1,9 @@
 import { useMemo } from 'react'
 
+import { useActiveAccount } from '@/lib/multisig/use-active-account'
 import { addressInList, addressesEqual } from '@/lib/utils'
 
 import { useNativeParams, usePoaParams } from './useModuleParams'
-import { useWallet } from './useWallet'
 
 export interface Permissions {
   // Native module permissions
@@ -28,7 +28,7 @@ export interface Permissions {
 }
 
 export function usePermissions(): Permissions {
-  const { bech32Address = null } = useWallet()
+  const { evmAddress: bech32Address } = useActiveAccount()
   const { data: nativeParams, isLoading: isNativeLoading } = useNativeParams()
   const { data: poaParams, isLoading: isPoaLoading } = usePoaParams()
 
@@ -38,7 +38,7 @@ export function usePermissions(): Permissions {
     const poaAuthorityAddress = poaParams?.admin || null
 
     const isNativeAdmin = addressesEqual(bech32Address, nativeAdminAddress)
-    const canMint = addressInList(bech32Address, whitelistedMinters)
+    const canMint = isNativeAdmin || addressInList(bech32Address, whitelistedMinters)
     const isPoaAuthority = addressesEqual(bech32Address, poaAuthorityAddress)
 
     return {

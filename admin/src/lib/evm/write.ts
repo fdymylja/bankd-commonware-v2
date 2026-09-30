@@ -61,6 +61,7 @@ export const writeEthContractAndWait = async <
       confirmations: targetConfirmations,
       hash,
     })
+    if (receipt.status !== 'success') throw new Error('Transaction reverted')
     onConfirmation?.(targetConfirmations, hash)
 
     return targetConfirmations >= confirmations
@@ -132,6 +133,7 @@ export const deployEthContractAndWait = async <
       confirmations: targetConfirmations,
       hash,
     })
+    if (receipt.status !== 'success') throw new Error('Transaction reverted')
     onConfirmation?.(targetConfirmations, hash)
 
     if (targetConfirmations >= confirmations) {

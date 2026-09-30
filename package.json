@@ -12,24 +12,7 @@
   "devDependencies": {
     "@playwright/test": "1.59.1",
     "@tsconfig/strictest": "2.0.5",
-    "napa": "^3.0.0",
     "typescript": "5.5.3"
   },
-  "pnpm": {
-    "overrides": {
-      "@mizufinance/bech32m": "https://github.com/mizufinance/penumbra-web/releases/download/bankd-demo.1/mizufinance-bech32m-18.0.1-bankd-demo.1.tgz",
-      "@mizufinance/protobuf": "file:admin/vendor/mizufinance-protobuf-11.0.1-bankd-demo.14.tgz",
-      "@mizufinance/types": "https://github.com/mizufinance/penumbra-web/releases/download/bankd-demo.1/mizufinance-types-36.0.1-bankd-demo.1.tgz",
-      "@mizufinance/wasm": "file:admin/vendor/mizufinance-wasm-53.0.1-bankd-demo.19.tgz"
-    },
-    "onlyBuiltDependencies": [
-      "@cosmology/protobufjs",
-      "@reown/appkit",
-      "@swc/core",
-      "bufferutil",
-      "esbuild",
-      "utf-8-validate"
-    ]
-  },
-  "packageManager": "pnpm@10.18.3+sha512.bbd16e6d7286fd7e01f6b3c0b3c932cda2965c06a908328f74663f10a9aea51f1129eea615134bf992831b009eabe167ecb7008b597f40ff9bc75946aadfb08d"
+  "packageManager": "pnpm@10.30.3"
 }

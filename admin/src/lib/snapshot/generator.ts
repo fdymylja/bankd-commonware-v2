@@ -13,12 +13,15 @@ import { gzipSync } from 'zlib'
 
 import { penumbraConfig } from '@/lib/config'
 import { embeddedShielddQueryUrl } from '@/lib/native-wallet/penumbra/embedded-shieldd'
+import { rpc } from '@/lib/rpc/server'
+import { shielddFetch } from '@/lib/rpc/shieldd'
 
 // =============================================================================
 // Configuration
 // =============================================================================
 
-const CHUNK_SIZE = parseInt(process.env.SNAPSHOT_CHUNK_SIZE || '100000', 10)
+const CHUNK_SIZE = parseInt(process.env.SNAPSHOT_CHUNK_SIZE || '10000', 10)
+if (!Number.isSafeInteger(CHUNK_SIZE) || CHUNK_SIZE < 1 || CHUNK_SIZE > 10000) throw new Error('SNAPSHOT_CHUNK_SIZE must be between 1 and 10000')
 const SNAPSHOTS_DIR = path.join(process.cwd(), 'data', 'snapshots')
 const MANIFEST_PATH = path.join(SNAPSHOTS_DIR, 'manifest.json')
 
@@ -133,7 +136,7 @@ async function fetchCompactBlockRange(
   })
   const base64Request = createGrpcWebRequest(request.toBinary())
 
-  const response = await fetch(
+  const response = await shielddFetch(
     embeddedShielddQueryUrl(penumbraConfig.grpcUrl, 'CompactBlockRange'),
     {
       method: 'POST',
@@ -187,20 +190,9 @@ async function getGenesisMarker(): Promise<string | null> {
 }
 
 async function getChainHeight(): Promise<number> {
-  try {
-    const response = await fetch(`${penumbraConfig.rpcUrl}/status`, {
-      cache: 'no-store',
-    })
-    if (!response.ok) return 0
-    const data = await response.json()
-    const height =
-      data.result?.sync_info?.latest_block_height ??
-      data.syncInfo?.latestBlockHeight ??
-      0
-    return typeof height === 'string' ? parseInt(height, 10) : height
-  } catch {
-    return 0
-  }
+  const block = await rpc<{ number: string } | null>('eth_getBlockByNumber', ['finalized', false])
+  if (!block) throw new Error('Chain has no finalized block')
+  return Number(BigInt(block.number))
 }
 
 // =============================================================================

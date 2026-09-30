@@ -2,7 +2,6 @@ import { Buffer } from 'node:buffer'
 
 import { NextRequest, NextResponse } from 'next/server'
 
-const DEFAULT_CHAIN_REST_URL = 'http://localhost:11317'
 const SUBJECT_HEADER = 'x-supervisor-subject'
 
 type GrantsResponse = {
@@ -38,7 +37,8 @@ export async function authorizeDisclosureSubject(
   scope: string
 ): Promise<SupervisorAccessDecision> {
   try {
-    const restURL = process.env.BANKD_REST_URL ?? process.env.NEXT_PUBLIC_REST_URL ?? DEFAULT_CHAIN_REST_URL
+    const restURL = process.env.BANKD_DISCLOSURE_URL
+    if (!restURL) return { granted: false, response: NextResponse.json({ error: 'Disclosure grants are unavailable on this base. Configure BANKD_DISCLOSURE_URL for an authorized disclosure service.' }, { status: 501 }) }
     const response = await fetch(`${restURL}/disclosure/v1/grants/${encodeURIComponent(role)}/${encodeURIComponent(scope)}`, { cache: 'no-store', signal: AbortSignal.timeout(3000) })
     if (!response.ok) throw new Error(`x/disclosure returned HTTP ${response.status}`)
     const grants = (await response.json()) as GrantsResponse

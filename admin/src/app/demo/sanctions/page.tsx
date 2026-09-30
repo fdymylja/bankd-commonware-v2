@@ -1,32 +1,25 @@
 'use client'
 
 /**
- * The x/compliance controls, on one page, against the live chain.
- *
- * Built for clip 04 of the demo recordings. Every control here is a real
- * authority-exec message and every number is read back off the chain, so the
- * page is a thin face over the module rather than a mock. `/security` is the
- * PoA validator page and carries none of this.
- *
- * Only the x/authority owner can sign any of it. On the localnet that is acc0
- * in scripts/dev-genesis.json, which is the same wallet the recording profile
- * imports, so the badge at the top reads green during a take.
+ * Compliance precompile controls. Transactions require the Authority owner;
+ * registry state and audit entries are read back from EVM views and events.
  */
 
+import { getBalances } from '@bankd/shared/chain/queries'
 import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
+import { parseUnits } from 'viem'
 
 import { PageContainer } from '@/components/layout'
 import { Button, Card, Input } from '@/components/ui'
 import {
-  exec,
   MsgAddSanctioned,
   MsgFreeze,
   MsgRemoveSanctioned,
   MsgSeize,
-  MsgSetGlobalPause,
   MsgUnfreeze,
+  exec,
 } from '@/lib/compliance/msgs'
 import { chainConfig } from '@/lib/config'
 import { executeTx } from '@/lib/evm'
@@ -52,8 +45,8 @@ type State = {
   entries: AuditEntry[]
 }
 
-const DENOM = 'ubrl'
-const UNITS = 1_000_000
+const DENOM = 'abrl'
+const UNITS = 10 ** chainConfig.decimals
 
 // A real OFAC-listed address out of x/compliance/types/default_sanctioned.go.
 // Lazarus Group, uid 27307. The quick-fill exists so a take is one click rather
@@ -66,7 +59,7 @@ const OFAC = {
 
 // acc1 in scripts/dev-genesis.json. Funded, and nothing else in the demo set
 // spends from it, so freezing and seizing here does not disturb another clip.
-const TARGET = 'wallet1r6yue0vuyj9m7xw78npspt9drq2tmtvg2p8wt0'
+const TARGET = '0x1E9ecCBCc427CBB55e78Dd0630ACAeC14Fa189Fc'
 
 const truncate = (a: string) =>
   a.length > 22 ? `${a.slice(0, 12)}...${a.slice(-8)}` : a
@@ -76,13 +69,13 @@ const amount = (coins: { denom: string; amount: string }[]) =>
 
 export default function SanctionsDemoPage() {
   const queryClient = useQueryClient()
-  const { cosmosAddress: walletAddress } = useActiveAccount()
+  const { evmAddress: walletAddress } = useActiveAccount()
   const [state, setState] = useState<State | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => setMounted(true), [])
-  const cosmosAddress = mounted ? walletAddress : ''
+  const activeAddress = mounted ? walletAddress : ''
 
   const refresh = useCallback(async () => {
     try {
@@ -102,7 +95,7 @@ export default function SanctionsDemoPage() {
   }, [refresh])
 
   const isAuthority =
-    !!cosmosAddress && !!state?.owner && cosmosAddress === state.owner
+    !!activeAddress && !!state?.owner && activeAddress.toLowerCase() === state.owner.toLowerCase()
 
   // Every control goes through here: sign, wait, then read the chain back. The
   // refresh is what puts the new number on screen, so it is never optimistic.
@@ -121,11 +114,11 @@ export default function SanctionsDemoPage() {
   return (
     <PageContainer
       title="Compliance"
-      description="Sanctions, freezes, seizure and the network pause"
+      description="Sanctions, freezes and seizure"
     >
       <StatusStrip
         state={state}
-        connected={cosmosAddress ?? ''}
+        connected={activeAddress ?? ''}
         isAuthority={isAuthority}
       />
 
@@ -137,7 +130,7 @@ export default function SanctionsDemoPage() {
           onRemove={(values) =>
             send('unsanction', () =>
               executeTx(queryClient, {
-                ...exec(cosmosAddress!, MsgRemoveSanctioned, {
+                ...exec(activeAddress!, MsgRemoveSanctioned, {
                   authority: state!.authorityModule,
                   addresses: [values.address],
                   reason: values.reason,
@@ -150,7 +143,7 @@ export default function SanctionsDemoPage() {
           onAdd={(values) =>
             send('sanction', () =>
               executeTx(queryClient, {
-                ...exec(cosmosAddress!, MsgAddSanctioned, {
+                ...exec(activeAddress!, MsgAddSanctioned, {
                   authority: state!.authorityModule,
                   addresses: [values.address],
                   reason: values.reason,
@@ -169,7 +162,7 @@ export default function SanctionsDemoPage() {
           onFreeze={(v, freeze) =>
             send('freeze', () =>
               executeTx(queryClient, {
-                ...exec(cosmosAddress!, freeze ? MsgFreeze : MsgUnfreeze, {
+                ...exec(activeAddress!, freeze ? MsgFreeze : MsgUnfreeze, {
                   authority: state!.authorityModule,
                   address: v.address,
                   reason: v.reason,
@@ -181,17 +174,17 @@ export default function SanctionsDemoPage() {
           }
         />
         <SeizeCard
-          recovery={cosmosAddress ?? ''}
+          recovery={activeAddress ?? ''}
           busy={busy}
           disabled={!isAuthority}
           onSeize={(v) =>
             send('seize', () =>
               executeTx(queryClient, {
-                ...exec(cosmosAddress!, MsgSeize, {
+                ...exec(activeAddress!, MsgSeize, {
                   authority: state!.authorityModule,
                   from: v.from,
                   to: v.to,
-                  amount: [{ denom: DENOM, amount: String(Math.round(Number(v.amount) * UNITS)) }],
+                  amount: [{ denom: DENOM, amount: parseUnits(v.amount, chainConfig.decimals).toString() }],
                   reason: v.reason,
                   ref: v.ref,
                 }),
@@ -202,25 +195,9 @@ export default function SanctionsDemoPage() {
         />
       </div>
 
-      <PauseCard
-        state={state}
-        busy={busy}
-        disabled={!isAuthority}
-        onSet={(paused, reason, ref) =>
-          send('pause', () =>
-            executeTx(queryClient, {
-              ...exec(cosmosAddress!, MsgSetGlobalPause, {
-                authority: state!.authorityModule,
-                paused,
-                reason,
-                ref,
-              }),
-              successMessage: paused ? 'Network paused' : 'Network resumed',
-            })
-          )
-        }
-      />
 
+
+      <p className="mt-6 text-sm text-gray-500">Case reasons and references are local annotations; this chain records the action and transaction hash.</p>
       <AuditCard state={state} />
     </PageContainer>
   )
@@ -330,7 +307,7 @@ function SanctionsCard({
           />
           <Input
             label="Reference"
-            placeholder="Case or list reference"
+            placeholder="Local reference (not stored on chain)"
             value={ref}
             onChange={(e) => setRef(e.target.value)}
           />
@@ -456,7 +433,7 @@ function FreezeCard({
   const [address, setAddress] = useState(TARGET)
   const [reason, setReason] = useState('')
   const [ref, setRef] = useState('')
-  const frozen = !!state?.frozen.includes(address)
+  const frozen = !!state?.frozen.includes(address.toLowerCase())
 
   return (
     <Card
@@ -486,7 +463,7 @@ function FreezeCard({
           />
           <Input
             label="Reference"
-            placeholder="Case reference"
+            placeholder="Local case reference (not stored on chain)"
             value={ref}
             onChange={(e) => setRef(e.target.value)}
           />
@@ -538,12 +515,8 @@ function SeizeCard({
     let live = true
     const read = async () => {
       try {
-        const res = await fetch(
-          `${chainConfig.rest}/cosmos/bank/v1beta1/balances/${from}/by_denom?denom=${DENOM}`,
-          { cache: 'no-store' }
-        )
-        const body = await res.json()
-        if (live) setBalance(body?.balance?.amount ?? '0')
+        const balances = await getBalances(from)
+        if (live) setBalance(balances.find(coin => coin.denom === DENOM)?.amount ?? '0')
       } catch {
         if (live) setBalance(null)
       }
@@ -602,84 +575,6 @@ function SeizeCard({
           disabled={disabled || !from || !to || !value || !reason}
         >
           Seize funds
-        </Button>
-      </div>
-    </Card>
-  )
-}
-
-function PauseCard({
-  state,
-  busy,
-  disabled,
-  onSet,
-}: {
-  state: State | null
-  busy: string | null
-  disabled: boolean
-  onSet: (paused: boolean, reason: string, ref: string) => void
-}) {
-  const [reason, setReason] = useState('')
-  const [ref, setRef] = useState('')
-  const paused = !!state?.paused
-
-  return (
-    <Card className="mt-6" header="Network pause">
-      <div className="flex flex-col gap-6 lg:flex-row lg:items-end">
-        <div className="lg:w-1/3">
-          <p className="text-sm text-gray-500">
-            One signed transaction stops value moving anywhere on the network,
-            for every account, in the block it lands in.
-          </p>
-          {/* A one-way door, and worth saying out loud on the page rather than
-              letting the next person find it the hard way. This admin signs
-              through the msgexec precompile, and x/msgexec's screenCompliance
-              rejects everything while the pause is on, with no allow-set. So the
-              button below cannot lift the pause it just set. The compliance ante
-              does exempt authority MsgExec, which is why the CLI still works. */}
-          {paused && (
-            <p className="mt-3 rounded-md border border-gray-300 bg-gray-50 p-3 text-xs text-gray-600">
-              Resume will not go through from here. The precompile this page signs
-              with is closed while the pause is on. Lift it with a Cosmos
-              transaction instead:
-              <code className="mt-2 block font-mono text-[11px] leading-5 text-gray-700">
-                bankd tx compliance set-global-pause false &quot;reason&quot; &quot;ref&quot;
-                --from acc0 --keyring-backend test
-              </code>
-            </p>
-          )}
-          <p
-            className={`mt-4 text-3xl font-semibold ${
-              paused ? 'text-gray-900' : 'text-green-700'
-            }`}
-          >
-            {paused ? 'Paused' : 'Settling'}
-          </p>
-        </div>
-
-        <div className="grid flex-1 gap-3 sm:grid-cols-2">
-          <Input
-            label="Reason"
-            placeholder="Incident response"
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-          />
-          <Input
-            label="Reference"
-            placeholder="Incident number"
-            value={ref}
-            onChange={(e) => setRef(e.target.value)}
-          />
-        </div>
-
-        <Button
-          size="lg"
-          variant={paused ? 'secondary' : 'primary'}
-          onClick={() => onSet(!paused, reason, ref)}
-          isLoading={busy === 'pause'}
-          disabled={disabled || !reason}
-        >
-          {paused ? 'Resume the network' : 'Pause the network'}
         </Button>
       </div>
     </Card>

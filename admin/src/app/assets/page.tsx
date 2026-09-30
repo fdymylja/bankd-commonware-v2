@@ -1,16 +1,13 @@
 'use client'
 
-import {
-  MsgConvertERC20,
-  MsgRegisterERC20,
-} from '@bankd/shared/proto/cosmos/evm/erc20/v1/tx'
+
+
 import { MsgDeposit } from '@bankd/shared/shieldd/msg-deposit'
 import { useQueryClient } from '@tanstack/react-query'
 import React, { useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
 import { Hex, parseUnits } from 'viem'
 
-import { RegulatedAssetCommandBuilder } from '@/components/assets/RegulatedAssetCommandBuilder'
 import { PageContainer } from '@/components/layout'
 import {
   Button,
@@ -48,7 +45,6 @@ import {
   generateAndSaveEphemeralAddressRecord,
   useNativeWallet,
 } from '@/lib/native-wallet'
-import { encodeInitCode, predictCreate2Address, randomSalt } from '@/lib/safe'
 import {
   formatAmount,
   formatTokenAmount,
@@ -96,10 +92,6 @@ export default function AssetsPage() {
 
   // Deploy modal state
   const [isDeployModalOpen, setIsDeployModalOpen] = useState(false)
-
-  // Convert modal state
-  const [tokenToConvert, setTokenToConvert] =
-    useState<CustomTokenBalance | null>(null)
 
   // Send to Private modal state
   const [tokenToSendPrivate, setTokenToSendPrivate] =
@@ -322,6 +314,7 @@ export default function AssetsPage() {
                       </td>
                       <td className="py-3 pl-4 text-right align-top">
                         {isPenumbraConnected &&
+                          row.key === 'native' &&
                           row.token &&
                           row.token.balance > 0n && (
                             <button
@@ -347,9 +340,7 @@ export default function AssetsPage() {
         )}
       </Card>
 
-      <div className="mt-6">
-        <RegulatedAssetCommandBuilder />
-      </div>
+
 
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
         <MintForm
@@ -365,13 +356,6 @@ export default function AssetsPage() {
         isOpen={isDeployModalOpen}
         onClose={() => setIsDeployModalOpen(false)}
         onSuccess={handleTokenDeployed}
-      />
-
-      {/* Convert ERC20 Modal */}
-      <ConvertERC20Modal
-        token={tokenToConvert}
-        onClose={() => setTokenToConvert(null)}
-        onSuccess={invalidateBalances}
       />
 
       {/* Send to Private Modal */}
@@ -567,6 +551,7 @@ function MintForm({
           <Input
             label="Amount"
             type="number"
+            step="any"
             placeholder="0.00"
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
@@ -632,6 +617,7 @@ function BurnForm({ onSuccess }: { onSuccess: () => void }) {
         <Input
           label="Amount to Burn"
           type="number"
+          step="any"
           placeholder="0.00"
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
@@ -702,52 +688,19 @@ function DeployERC20Modal({
     }
 
     setIsDeploying(true)
-    const toastId = toast.loading('Creating and registering asset...')
+    const toastId = toast.loading('Deploying asset...')
 
     try {
       if (!activeBech32) {
         toast.error('No active account', { id: toastId })
         return
       }
-      // CREATE2 makes the address known up front, so deploy + register go in one
-      // executeTx call for both signers - executeTx routes by active wallet: a
-      // Safe batches them into one atomic MultiSend proposal, the personal path
-      // runs them in sequence. The constructor's initial mint goes to CreateCall,
-      // not the caller - real supply is minted via x/native afterwards.
-      const initCode = encodeInitCode({
+      await executeTx(queryClient, {
         abi: MOCK_ERC20_ABI,
-        bytecode: MOCK_ERC20_BYTECODE,
+        bytecode: MOCK_ERC20_BYTECODE as Hex,
         args: [name.trim(), symbol.trim(), decimalsNum],
-      })
-      const salt = randomSalt()
-      const predicted = predictCreate2Address(initCode, salt)
-
-      await executeTx(
-        queryClient,
-        {
-          abi: MOCK_ERC20_ABI,
-          bytecode: MOCK_ERC20_BYTECODE,
-          args: [name.trim(), symbol.trim(), decimalsNum],
-          salt,
-          successMessage: 'Asset deployed',
-          toastId,
-        },
-        {
-          msg: MsgRegisterERC20,
-          values: {
-            signer: activeBech32,
-            erc20addresses: [predicted],
-          },
-          successMessage: `Asset deployed and registered at ${truncateAddress(predicted, 8, 6)}!`,
-        }
-      )
-      // The predicted address is stable, so add it now: the personal path has
-      // already registered it, a Safe registers it once the owners execute.
-      onSuccess({
-        address: predicted,
-        name: name.trim(),
-        symbol: symbol.trim(),
-        decimals: decimalsNum,
+        successMessage: 'Asset deployed', toastId,
+        onContractDeployed: (address: Hex) => onSuccess({ address, name: name.trim(), symbol: symbol.trim(), decimals: decimalsNum }),
       })
       finishForm()
     } catch (error) {
@@ -815,151 +768,6 @@ function DeployERC20Modal({
   )
 }
 
-function ConvertERC20Modal({
-  token,
-  onClose,
-  onSuccess,
-}: {
-  token: CustomTokenBalance | null
-  onClose: () => void
-  onSuccess: () => void
-}) {
-  const queryClient = useQueryClient()
-  const { evmAddress: hexAddress, cosmosAddress: bech32Address } =
-    useActiveAccount()
-  const [amount, setAmount] = useState('')
-  const [isConverting, setIsConverting] = useState(false)
-
-  const handleConvert = async (e: React.FormEvent) => {
-    e.preventDefault()
-
-    if (!hexAddress || !bech32Address || !token) {
-      toast.error('Please connect your wallet first')
-      return
-    }
-
-    if (!amount || parseFloat(amount) <= 0) {
-      toast.error('Please enter a valid amount')
-      return
-    }
-
-    // Parse amount with token decimals using parseUnits for precision
-    let amountBigInt: bigint
-    try {
-      amountBigInt = parseUnits(amount, token.decimals)
-    } catch {
-      toast.error('Invalid amount format')
-      return
-    }
-
-    if (amountBigInt > token.balance) {
-      toast.error('Amount exceeds your balance')
-      return
-    }
-
-    setIsConverting(true)
-
-    try {
-      await executeTx(queryClient, {
-        msg: MsgConvertERC20,
-        values: {
-          contractAddress: token.address,
-          amount: amountBigInt.toString(),
-          receiver: bech32Address,
-          sender: hexAddress,
-        },
-        successMessage: `Converted ${amount} ${token.symbol} to native assets!`,
-      })
-
-      setAmount('')
-      onSuccess()
-      onClose()
-    } catch (error) {
-      console.error('Failed to convert assets:', error)
-    } finally {
-      setIsConverting(false)
-    }
-  }
-
-  const handleMaxClick = () => {
-    if (token) {
-      setAmount(token.balanceFormatted)
-    }
-  }
-
-  return (
-    <Modal
-      isOpen={token !== null}
-      onClose={onClose}
-      title={`Convert ${token?.symbol ?? 'Asset'} to Native`}
-      size="md"
-    >
-      <form onSubmit={handleConvert} className="space-y-4">
-        <p className="text-sm text-gray-500">
-          Convert assets to native format so they can be transferred between
-          institutions.
-        </p>
-
-        {token && (
-          <div className="rounded-lg bg-blue-50 p-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-blue-700">Your Balance</span>
-              <span className="font-mono text-sm font-medium text-blue-900">
-                {formatAmount(token.balanceFormatted)} {token.symbol}
-              </span>
-            </div>
-            <div className="mt-1 text-xs text-blue-600">
-              Contract: {truncateAddress(token.address, 12, 10)}
-            </div>
-          </div>
-        )}
-
-        <div>
-          <div className="mb-1 flex items-center justify-between">
-            <label className="block text-sm font-medium text-gray-700">
-              Amount to Convert
-            </label>
-            <button
-              type="button"
-              onClick={handleMaxClick}
-              className="text-xs text-blue-600 hover:text-blue-800"
-            >
-              Max
-            </button>
-          </div>
-          <Input
-            type="number"
-            placeholder="0.00"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-            hint={`Will receive native erc20:${token?.address ?? ''} tokens`}
-          />
-        </div>
-
-        <div className="flex gap-3 pt-2">
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={onClose}
-            className="flex-1"
-            disabled={isConverting}
-          >
-            Cancel
-          </Button>
-          <Button
-            type="submit"
-            isLoading={isConverting}
-            disabled={!hexAddress || !amount}
-            className="flex-1"
-          >
-            Convert
-          </Button>
-        </div>
-      </form>
-    </Modal>
-  )
-}
-
 function SendToPrivateModal({
   token,
   onClose,
@@ -970,7 +778,7 @@ function SendToPrivateModal({
   onSuccess: () => void
 }) {
   const queryClient = useQueryClient()
-  const { bech32Address, hexAddress } = useEVMWallet()
+  const { bech32Address } = useEVMWallet()
   const { address: penumbraAddress } = usePenumbra()
 
   const { currentAccount } = useNativeWallet()
@@ -1104,28 +912,9 @@ function SendToPrivateModal({
         toastId,
       }
 
-      // ERC20 tokens must be converted to native bank balance before deposit
-      if (!isNativeToken) {
-        const [, transferResult] = await executeTx(
-          queryClient,
-          {
-            msg: MsgConvertERC20,
-            values: {
-              contractAddress: token.address,
-              amount: amountStr,
-              receiver: bech32Address,
-              sender: hexAddress,
-            },
-            successMessage: 'Converted to native token',
-            toastId,
-          },
-          transferStep
-        )
-        assertBroadcast(transferResult)
-      } else {
-        const [transferResult] = await executeTx(queryClient, transferStep)
-        assertBroadcast(transferResult)
-      }
+      if (!isNativeToken) throw new Error('Only native BRL can be shielded on this base')
+      const [transferResult] = await executeTx(queryClient, transferStep)
+      assertBroadcast(transferResult)
 
       toast.success(`Shielded ${amount} ${token.symbol}`, { id: toastId })
 

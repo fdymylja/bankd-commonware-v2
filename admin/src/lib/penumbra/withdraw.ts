@@ -1,5 +1,6 @@
 'use client'
 
+import { evmAddress } from '@bankd/shared/chain/client'
 import { AssetId,Value } from '@mizufinance/protobuf/shieldd/core/asset/v1/asset_pb'
 import { HostTransfer,HostWithdrawal } from '@mizufinance/protobuf/shieldd/core/component/shielded_pool/v1/shielded_pool_pb'
 import { AddressIndex } from '@mizufinance/protobuf/shieldd/core/keys/v1/keys_pb'
@@ -37,7 +38,7 @@ export async function hostWithdraw(params: HostWithdrawParams): Promise<Withdraw
         amount: new Amount({ lo: params.amount & ((1n << 64n) - 1n), hi: params.amount >> 64n }),
         assetId: new AssetId({ inner: params.assetId }),
       }),
-      destination: { case: 'transfer', value: new HostTransfer({ recipient: params.destinationAddress }) },
+      destination: { case: 'transfer', value: new HostTransfer({ recipient: evmAddress(params.destinationAddress) }) },
     })
     const request = new TransactionPlannerRequest({
       source: new AddressIndex({ account: params.sourceAddressIndex }),

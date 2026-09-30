@@ -1,5 +1,6 @@
 'use client'
 
+import { getBalances } from '@bankd/shared/chain/queries'
 import { fromBech32, toBech32 } from '@cosmjs/encoding'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
@@ -8,7 +9,6 @@ import { type Hex, getAddress, hexToBytes, toHex } from 'viem'
 import { PageContainer } from '@/components/layout'
 import { Button, Card, Input, Modal } from '@/components/ui'
 import { chainConfig } from '@/lib/config'
-import { getStargateClient } from '@/lib/cosmos'
 import {
   type CreateSafeTxInput,
   type MemberSignatureBlob,
@@ -375,9 +375,8 @@ function useNativeBalance(
     async function run() {
       if (!cosmosAddress) return
       try {
-        const client = await getStargateClient()
-        const coin = await client.getBalance(cosmosAddress, chainConfig.denom)
-        if (!cancelled) setBalance(coin.amount)
+        const coins = await getBalances(cosmosAddress)
+        if (!cancelled) setBalance(coins[0].amount)
       } catch {
         if (!cancelled) setBalance(null)
       }
@@ -964,8 +963,6 @@ function SafePendingTxCard({
 
 const SAFE_VARIANTS: { key: SafeTxVariant; label: string }[] = [
   { key: 'native-send', label: 'Native send' },
-  { key: 'cosmos-send', label: 'Cosmos send' },
-  { key: 'authority-send', label: 'Authority exec' },
   { key: 'add-owner', label: 'Add owner' },
   { key: 'change-threshold', label: 'Change threshold' },
 ]

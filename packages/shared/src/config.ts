@@ -31,25 +31,25 @@ const GET_ENV_VAR = (name: keyof typeof PUBLIC_ENV, fallback = '') => {
 }
 
 export const penumbraConfig = {
-  chainId: GET_ENV_VAR('PENUMBRA_CHAIN_ID', 'penumbra-local-devnet'),
-  rpcUrl: GET_ENV_VAR('PENUMBRA_RPC_URL', 'http://localhost:16657'),
-  grpcUrl: GET_ENV_VAR('PENUMBRA_GRPC_URL', 'http://localhost:8080'),
-  proverUrl: GET_ENV_VAR('PENUMBRA_PROVER_URL', 'http://localhost:8090'),
+  chainId: GET_ENV_VAR('PENUMBRA_CHAIN_ID', 'bankd-9001'),
+  rpcUrl: GET_ENV_VAR('PENUMBRA_RPC_URL', '/api/rpc'),
+  grpcUrl: GET_ENV_VAR('PENUMBRA_GRPC_URL', '/api/shieldd'),
+  proverUrl: GET_ENV_VAR('PENUMBRA_PROVER_URL', 'http://127.0.0.1:8090'),
 }
 
 export const chainConfig = {
   chainId: '9001',
   chainName: 'bankd',
   prettyName: 'Bankd',
-  rpc: GET_ENV_VAR('RPC_URL', 'http://localhost:27657'),
-  rest: GET_ENV_VAR('REST_URL', 'http://localhost:11317'),
-  grpcWeb: GET_ENV_VAR('GRPC_WEB', 'http://localhost:11317'),
-  evmRpc: GET_ENV_VAR('EVM_RPC', 'http://localhost:8545'),
-  evmWebSocket: GET_ENV_VAR('EVM_WEBSOCKET', 'ws://localhost:8546'),
+  rpc: GET_ENV_VAR('RPC_URL', 'http://localhost:8545'),
+  rest: GET_ENV_VAR('REST_URL', 'http://localhost:8545'),
+  grpcWeb: GET_ENV_VAR('GRPC_WEB', 'http://localhost:8545'),
+  evmRpc: PUBLIC_ENV.EVM_RPC || ((globalThis as { location?: { origin: string } }).location?.origin ? `${(globalThis as { location?: { origin: string } }).location!.origin}/api/rpc` : (process.env.BANKD_RPC_URL || 'http://localhost:8545')),
+  evmWebSocket: GET_ENV_VAR('EVM_WEBSOCKET', 'ws://localhost:8545'),
   bech32Prefix: 'wallet',
-  denom: 'ubrl',
+  denom: 'abrl',
   displayDenom: 'BRL',
-  decimals: 6,
+  decimals: 18,
   coinType: 60, // EVM compatible
   evmChainId: 9001,
   nativeErc20Address: '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE' as Hex,

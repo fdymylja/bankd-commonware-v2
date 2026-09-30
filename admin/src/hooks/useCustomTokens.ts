@@ -2,7 +2,7 @@
 
 import { CustomToken, MOCK_ERC20_ABI } from '@bankd/shared/evm/mockERC20'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { getBytecode, readContract } from '@wagmi/core'
+import { getBalance, getBytecode, readContract } from '@wagmi/core'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Hex, formatUnits } from 'viem'
 
@@ -129,7 +129,7 @@ export function useCustomTokenBalances(
               // }
             }
 
-            const balance = await readContract(config, {
+            const balance = isNative ? (await getBalance(config, { address: account })).value : await readContract(config, {
               address: token.address,
               abi: MOCK_ERC20_ABI,
               functionName: 'balanceOf',

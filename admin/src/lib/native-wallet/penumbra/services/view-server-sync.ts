@@ -654,10 +654,7 @@ async function getChainHeight(): Promise<number> {
     const response = await fetch('/api/penumbra/status')
     if (!response.ok) return 0
     const data = await response.json()
-    // Handle both camelCase and snake_case responses
-    const height = data.result?.sync_info?.latest_block_height 
-      ?? data.syncInfo?.latestBlockHeight 
-      ?? 0
+    const height = data.height ?? 0
     return typeof height === 'string' ? parseInt(height, 10) : height
   } catch {
     return 0
@@ -759,12 +756,21 @@ export async function getPenumbraWalletSyncStatus(): Promise<SyncStatus> {
   }
 }
 
-export async function assertPenumbraWalletSynced(): Promise<void> {
+export async function assertPenumbraWalletSynced(minHeight?: bigint): Promise<void> {
+  // Wait for the finalized tip observed when this operation starts. A moving
+  // target never settles while Commonware produces blocks faster than we poll.
+  // Previously committed roots remain valid transaction anchors.
+  const initial = await getPenumbraWalletSyncStatus()
+  const target = BigInt(initial.chainHeight) > (minHeight ?? 0n)
+    ? BigInt(initial.chainHeight)
+    : (minHeight ?? 0n)
   const deadline = Date.now() + 60_000
 
   while (Date.now() < deadline) {
     const status = await getPenumbraWalletSyncStatus()
-    if (status.isSynced) {
+    const current = BigInt(status.currentHeight)
+    // A local height beyond the current chain can belong to an earlier genesis.
+    if (target > 0n && current >= target && current <= BigInt(status.chainHeight) + 2n) {
       return
     }
 

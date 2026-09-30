@@ -1,7 +1,6 @@
 'use client'
 
-import { MSGEXEC_ABI, MSGEXEC_PRECOMPILE_ADDRESS } from '@bankd/shared/evm/precompile'
-import { MsgEthereumTxResponse } from '@bankd/shared/proto/cosmos/evm/vm/v1/tx'
+import { getPublicClient } from '@bankd/shared/chain/client'
 import { IndexedTx } from '@cosmjs/stargate'
 import { QueryClient } from '@tanstack/react-query'
 import {
@@ -15,10 +14,7 @@ import {
   ContractFunctionName,
   Hex,
   Narrow,
-  bytesToHex,
-  decodeAbiParameters,
   encodeFunctionData,
-  hexToBytes,
   recoverAddress,
   toHex,
 } from 'viem'
@@ -26,9 +22,9 @@ import {
 import { useCoSignModal } from '@/store/coSignModal'
 
 import { makeWagmiConfig } from './wagmi'
-import { DeployContractResult, writeEthContractAndWait } from './write'
+import { DeployContractResult, deployEthContractAndWait, writeEthContractAndWait } from './write'
+import { bankdMessageCall } from '../commonware/transactions'
 import { chainConfig } from '../config'
-import { queries } from '../cosmos'
 import { getActiveWallet } from '../multisig/active-store'
 import { savePendingSafeTx } from '../multisig/db'
 import { getEVMAccount } from '../native-wallet/evm'
@@ -47,6 +43,7 @@ import {
   randomSalt,
   signSafeTxHash,
 } from '../safe'
+import { MULTISEND_CALL_ONLY_ADDRESS } from '../safe/abi'
 import { getErrorMessage } from '../utils'
 
 
@@ -320,42 +317,16 @@ const isDeployContractStep = (
  */
 const convertMsgExecStep = (step: MsgExecStep): EvmTransactionStep => {
   const { msg, values, ...rest } = step
-  const encodedMsg = msg.toProto(msg.fromPartial(values))
-
-  return {
-    address: MSGEXEC_PRECOMPILE_ADDRESS,
-    abi: MSGEXEC_ABI,
-    functionName: 'execute',
-    args: [msg.typeUrl, bytesToHex(encodedMsg)],
-    ...rest,
-  }
+  return { ...bankdMessageCall(msg.typeUrl, msg.fromPartial(values)), ...rest } as EvmTransactionStep
 }
 
 /**
  * Convert a MsgExecBatchStep to the EVM call format.
  */
 const convertMsgExecBatchStep = (
-  step: MsgExecBatchStep
+  _step: MsgExecBatchStep
 ): EvmTransactionStep & { _batchMsgs: MsgExecBatchMessage[] } => {
-  const { msgs, ...rest } = step
-
-  const typeUrls: string[] = []
-  const encodedValues: `0x${string}`[] = []
-
-  for (const { msg, values } of msgs) {
-    typeUrls.push(msg.typeUrl)
-    encodedValues.push(bytesToHex(msg.toProto(msg.fromPartial(values))))
-  }
-
-  return {
-    address: MSGEXEC_PRECOMPILE_ADDRESS,
-    abi: MSGEXEC_ABI,
-    functionName: 'executeBatch',
-    args: [typeUrls, encodedValues],
-    // Store the original msgs for response decoding
-    _batchMsgs: msgs,
-    ...rest,
-  }
+  throw new Error('Message batches must use explicit EVM calls; submit them atomically through a Safe.')
 }
 
 /**
@@ -556,6 +527,9 @@ type BaseTransactionStep =
   | {
       abi: Narrow<Abi | readonly unknown[]>
       address: `0x${string}`
+      functionName: string
+      args?: readonly unknown[]
+      value?: bigint
       successMessage: string
       confirmations?: number
       onTransactionSent?: (hash: `0x${string}`, index: number) => void
@@ -694,6 +668,12 @@ const proposeViaSafe = async (
   toastId: string
 ): Promise<readonly ProposedTransactionResult[]> => {
   if (txs.length === 0) throw new Error('No transaction to propose')
+  const dependencies = [ ...(txs.some(isDeployContractStep) ? [CREATE_CALL_ADDRESS] : []), ...(txs.length > 1 ? [MULTISEND_CALL_ONLY_ADDRESS] : []) ]
+  for (const address of dependencies) {
+    const code = await getPublicClient().getCode({ address: address as Hex })
+    if (!code || code === '0x') throw new Error(`Safe helper ${address} must be deployed before this operation`)
+  }
+
 
   const encoded = txs.map(encodeStepToCall)
   const calls = encoded.map((e) => e.call)
@@ -899,11 +879,6 @@ export const executeTx = async <const T extends readonly BaseTransactionStep[]>(
         ? convertMsgExecStep(stepAsTransactionStep as unknown as MsgExecStep)
         : (stepAsTransactionStep as EvmTransactionStep | DeployContractStep)
 
-    // Store batch msgs for later response decoding
-    const batchMsgs = isBatchStep
-      ? (evmStep as ReturnType<typeof convertMsgExecBatchStep>)._batchMsgs
-      : undefined
-
     const {
       successMessage,
       confirmations: _confirmations,
@@ -929,42 +904,14 @@ export const executeTx = async <const T extends readonly BaseTransactionStep[]>(
         | DeployTransactionResult
 
       if (isDeployStep) {
-        // Deploy via CreateCall.performCreate2 so the address is deterministic
-        // and matches the Safe path (see create2DeployParams). The tx is a plain
-        // CALL, so the receipt has no contractAddress - we use the predicted one.
-        const { onContractDeployed } = rest as DeployContractStep
-        const { deployedAddress, write } = create2DeployParams(
-          rest as DeployContractStep
-        )
-        const receipt = await writeEthContractAndWait(write as any, {
+        const { onContractDeployed, salt: _salt, ...deploy } = rest as DeployContractStep
+        const receipt = await deployEthContractAndWait(deploy as any, {
           confirmations,
-          onTransactionSent: (hash) => {
-            onTransactionSent?.(hash, index)
-            toast.loading(
-              `Deploying contract. Waiting for ${confirmations} more confirmation${confirmations === 1 ? '' : 's'}...`,
-              {
-                id: toastId,
-              }
-            )
-          },
-          onConfirmation: (confirmed) => {
-            const remainingConfirmations = confirmations - confirmed
-            toast.loading(
-              `Deploying contract. Waiting for ${
-                remainingConfirmations
-              } more confirmation${remainingConfirmations === 1 ? '' : 's'}...`,
-              {
-                id: toastId,
-              }
-            )
-          },
+          onTransactionSent: hash => onTransactionSent?.(hash, index),
         })
-        const deployResult = {
-          ...receipt,
-          contractAddress: deployedAddress,
-        } as DeployTransactionResult
-        onContractDeployed?.(deployedAddress)
-        txResult = deployResult
+        onContractDeployed?.(receipt.contractAddress)
+        txResult = receipt
+
       } else {
         // Handle regular EVM call step
         txResult = await writeEthContractAndWait(rest as any, {
@@ -997,113 +944,6 @@ export const executeTx = async <const T extends readonly BaseTransactionStep[]>(
         throw new Error('Transaction reverted')
       }
 
-      // Load Cosmos TX if it exists, silently fail if it doesn't.
-      txResult.cosmosTx = await queryClient
-        .fetchQuery({
-          ...queries.tx.byEthereumHash(txResult.transactionHash),
-          retry: 3,
-          retryDelay: 500,
-        })
-        .catch(() => null)
-
-      // Decode x/msgexec precompile execution results for EVM call steps (not deploy)
-      if (!isDeployStep) {
-        const { msgExecResponseDecoder, address } = rest as Omit<
-          EvmTransactionStep,
-          'successMessage' | 'confirmations' | 'onTransactionSent'
-        >
-        try {
-          if (txResult.cosmosTx && address === MSGEXEC_PRECOMPILE_ADDRESS) {
-            const txResponse = txResult.cosmosTx.msgResponses.find(
-              (msgResponse) =>
-                msgResponse.typeUrl === MsgEthereumTxResponse.typeUrl
-            )
-            if (txResponse) {
-              const msgEthereumTxResponse = MsgEthereumTxResponse.decode(
-                txResponse.value
-              )
-
-              if (isBatchStep && batchMsgs) {
-                // Handle batch response decoding
-                // The return data is ABI-encoded bytes[] which we need to decode
-                try {
-                  const [decodedResults] = decodeAbiParameters(
-                    [{ type: 'bytes[]' }],
-                    bytesToHex(msgEthereumTxResponse.ret)
-                  ) as [`0x${string}`[]]
-
-                  // Convert hex strings back to Uint8Array
-                  const returnDataArray = decodedResults.map((hex) =>
-                    hexToBytes(hex)
-                  )
-
-                  ;(txResult as ExecuteBatchTransactionResult).msgExecReturnData =
-                    returnDataArray
-
-                  // Decode each response using corresponding decoder
-                  const decodedResponses: unknown[] = []
-                  for (let i = 0; i < batchMsgs.length; i++) {
-                    const msg = batchMsgs[i]
-                    const returnData = returnDataArray[i]
-                    if (msg.response && returnData) {
-                      try {
-                        decodedResponses.push(msg.response.decode(returnData))
-                      } catch (decodeError) {
-                        console.error(
-                          `Failed to decode batch response at index ${i}:`,
-                          decodeError
-                        )
-                        decodedResponses.push(undefined)
-                      }
-                    } else {
-                      decodedResponses.push(undefined)
-                    }
-                  }
-                  ;(
-                    txResult as ExecuteBatchTransactionResult
-                  ).decodedMsgResponses = decodedResponses
-                } catch (abiDecodeError) {
-                  console.error(
-                    'Failed to ABI-decode batch results:',
-                    abiDecodeError
-                  )
-                }
-              } else {
-                // Handle single message response decoding
-                ;(txResult as ExecuteTransactionResult).msgExecReturnData =
-                  msgEthereumTxResponse.ret
-
-                // If a parser was provided, attempt to decode the return data
-                if (
-                  msgExecResponseDecoder &&
-                  (txResult as ExecuteTransactionResult).msgExecReturnData
-                ) {
-                  try {
-                    ;(txResult as ExecuteTransactionResult).decodedMsgResponse =
-                      msgExecResponseDecoder.decode(
-                        (txResult as ExecuteTransactionResult).msgExecReturnData!
-                      )
-                  } catch (error) {
-                    console.error(
-                      'Failed to decode x/msgexec precompile execution results for tx',
-                      txResult.transactionHash,
-                      txResult.cosmosTx?.msgResponses,
-                      error
-                    )
-                  }
-                }
-              }
-            }
-          }
-        } catch (error) {
-          console.error(
-            'Failed to decode x/msgexec precompile execution results for tx',
-            txResult.transactionHash,
-            txResult.cosmosTx?.msgResponses,
-            error
-          )
-        }
-      }
 
       results.push(txResult)
       toast.success(successMessage, { id: toastId })

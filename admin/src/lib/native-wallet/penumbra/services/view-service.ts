@@ -121,7 +121,7 @@ export class LocalViewService {
       const response = await fetch('/api/penumbra/status')
       if (response.ok) {
         const data = await response.json()
-        const chainHeight = data?.result?.sync_info?.latest_block_height
+        const chainHeight = data?.height
         if (chainHeight) {
           latestHeight = parseInt(chainHeight, 10)
           catchingUp = syncedHeight < latestHeight
