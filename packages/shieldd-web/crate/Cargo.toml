@@ -1,0 +1,69 @@
+[package]
+name = "shieldd-wasm"
+version = "2.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["console_error_panic_hook"]
+mock-database = []
+
+# Development keys require assertions, but wallet cryptography still needs optimization.
+[profile.dev]
+opt-level = 2
+debug = 0
+debug-assertions = true
+
+[dependencies]
+shieldd-disclosure = { path = "../../../shieldd/crates/disclosure", package = "shieldd-sdk-disclosure", default-features = false, features = ["orbis"] }
+serde_json = "1.0.128"
+decaf377-rdsa = "0.11"
+shieldd-asset = { path = "../../../shieldd/crates/core/asset", package = "shieldd-sdk-asset" }
+shieldd-compact-block = { path = "../../../shieldd/crates/core/component/compact-block", package = "shieldd-sdk-compact-block", default-features = false }
+shieldd-compliance = { path = "../../../shieldd/crates/core/component/compliance", package = "shieldd-sdk-compliance", default-features = false }
+shieldd-fee = { path = "../../../shieldd/crates/core/component/fee", package = "shieldd-sdk-fee", default-features = false }
+shieldd-keys = { path = "../../../shieldd/crates/core/keys", package = "shieldd-sdk-keys" }
+shieldd-num = { path = "../../../shieldd/crates/core/num", package = "shieldd-sdk-num" }
+shieldd-proof-params = { path = "../../../shieldd/crates/crypto/proof-params", package = "shieldd-sdk-proof-params", default-features = false }
+shieldd-proto = { path = "../../../shieldd/crates/proto", package = "shieldd-sdk-proto", default-features = false }
+shieldd-sct = { path = "../../../shieldd/crates/core/component/sct", package = "shieldd-sdk-sct", default-features = false }
+shieldd-shielded-pool = { path = "../../../shieldd/crates/core/component/shielded-pool", package = "shieldd-sdk-shielded-pool", default-features = false }
+shieldd-tct = { path = "../../../shieldd/crates/crypto/tct", package = "shieldd-sdk-tct" }
+shieldd-transaction = { path = "../../../shieldd/crates/core/transaction", package = "shieldd-sdk-transaction", default-features = false }
+
+anyhow = "1.0.89"
+ark-ff = { version = "0.5.0", features = ["std"] }
+base64 = "0.22.1"
+console_error_panic_hook = { version = "0.1.7", optional = true }
+decaf377 = { version = "0.10.1", features = ["r1cs"] }
+hex = "0.4.3"
+indexed_db_futures = "0.5.0"
+js-sys = "0.3.70"
+prost = "0.13.4"
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+regex = { version = "1.11.0" }
+serde = { version = "1.0.210", features = ["derive"] }
+serde-wasm-bindgen = "0.6.5"
+thiserror = "1.0.64"
+wasm-bindgen = "0.2.93"
+wasm-bindgen-futures = "0.4.43"
+web-sys = { version = "0.3.70", features = ["console", "Headers", "RequestInit", "RequestMode", "Response", "Window"] }
+wasm-bindgen-test = "0.3.43"
+bincode = "1.3.3"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3.43"
+
+[patch.crates-io]
+decaf377 = { git = "https://github.com/mizufinance/decaf377", branch = "main" }
+decaf377-rdsa = { git = "https://github.com/mizufinance/decaf377-rdsa", branch = "main" }
+poseidon377 = { git = "https://github.com/mizufinance/poseidon377", branch = "main" }
+poseidon-permutation = { git = "https://github.com/mizufinance/poseidon377", branch = "main" }
+poseidon-parameters = { git = "https://github.com/mizufinance/poseidon377", branch = "main" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(wasm_bindgen_unstable_test_coverage)'] }
+
+[workspace]
