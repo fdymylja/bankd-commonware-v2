@@ -979,7 +979,7 @@ packages:
     engines: {node: '>=16.0.0'}
 
   '@mizufinance/bech32m@https://github.com/mizufinance/penumbra-web/releases/download/bankd-demo.1/mizufinance-bech32m-18.0.1-bankd-demo.1.tgz':
-    resolution: {tarball: https://github.com/mizufinance/penumbra-web/releases/download/bankd-demo.1/mizufinance-bech32m-18.0.1-bankd-demo.1.tgz}
+    resolution: {integrity: sha512-e2aTYQMpLc7IwyBZVkknMQqKrAlSkZ8GTwAFlAkcqbbLUWQg2MyIFDJTFMpesni+IvOxTrlAL0rru9T4m76u/g==, tarball: https://github.com/mizufinance/penumbra-web/releases/download/bankd-demo.1/mizufinance-bech32m-18.0.1-bankd-demo.1.tgz}
     version: 18.0.1-bankd-demo.1
     peerDependencies:
       '@mizufinance/protobuf': 11.0.1-bankd-demo.1
@@ -991,7 +991,7 @@ packages:
       '@bufbuild/protobuf': ^1.10.0
 
   '@mizufinance/types@https://github.com/mizufinance/penumbra-web/releases/download/bankd-demo.1/mizufinance-types-36.0.1-bankd-demo.1.tgz':
-    resolution: {tarball: https://github.com/mizufinance/penumbra-web/releases/download/bankd-demo.1/mizufinance-types-36.0.1-bankd-demo.1.tgz}
+    resolution: {integrity: sha512-8JYgsIfnmQBvhYpDW4368T9TiE2AwjSZ9IpaoNEePtJWid+XJDt+YrwXTmaSJ+FfH0eDzosGBpkW80gCrAtbkQ==, tarball: https://github.com/mizufinance/penumbra-web/releases/download/bankd-demo.1/mizufinance-types-36.0.1-bankd-demo.1.tgz}
     version: 36.0.1-bankd-demo.1
     peerDependencies:
       '@bufbuild/protobuf': ^1.10.0

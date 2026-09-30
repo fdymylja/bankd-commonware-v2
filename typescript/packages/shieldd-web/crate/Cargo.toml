@@ -17,21 +17,21 @@ debug = 0
 debug-assertions = true
 
 [dependencies]
-shieldd-disclosure = { path = "../../../shieldd/crates/disclosure", package = "shieldd-sdk-disclosure", default-features = false, features = ["orbis"] }
+shieldd-disclosure = { path = "../../../../shieldd/crates/disclosure", package = "shieldd-sdk-disclosure", default-features = false, features = ["orbis"] }
 serde_json = "1.0.128"
 decaf377-rdsa = "0.11"
-shieldd-asset = { path = "../../../shieldd/crates/core/asset", package = "shieldd-sdk-asset" }
-shieldd-compact-block = { path = "../../../shieldd/crates/core/component/compact-block", package = "shieldd-sdk-compact-block", default-features = false }
-shieldd-compliance = { path = "../../../shieldd/crates/core/component/compliance", package = "shieldd-sdk-compliance", default-features = false }
-shieldd-fee = { path = "../../../shieldd/crates/core/component/fee", package = "shieldd-sdk-fee", default-features = false }
-shieldd-keys = { path = "../../../shieldd/crates/core/keys", package = "shieldd-sdk-keys" }
-shieldd-num = { path = "../../../shieldd/crates/core/num", package = "shieldd-sdk-num" }
-shieldd-proof-params = { path = "../../../shieldd/crates/crypto/proof-params", package = "shieldd-sdk-proof-params", default-features = false }
-shieldd-proto = { path = "../../../shieldd/crates/proto", package = "shieldd-sdk-proto", default-features = false }
-shieldd-sct = { path = "../../../shieldd/crates/core/component/sct", package = "shieldd-sdk-sct", default-features = false }
-shieldd-shielded-pool = { path = "../../../shieldd/crates/core/component/shielded-pool", package = "shieldd-sdk-shielded-pool", default-features = false }
-shieldd-tct = { path = "../../../shieldd/crates/crypto/tct", package = "shieldd-sdk-tct" }
-shieldd-transaction = { path = "../../../shieldd/crates/core/transaction", package = "shieldd-sdk-transaction", default-features = false }
+shieldd-asset = { path = "../../../../shieldd/crates/core/asset", package = "shieldd-sdk-asset" }
+shieldd-compact-block = { path = "../../../../shieldd/crates/core/component/compact-block", package = "shieldd-sdk-compact-block", default-features = false }
+shieldd-compliance = { path = "../../../../shieldd/crates/core/component/compliance", package = "shieldd-sdk-compliance", default-features = false }
+shieldd-fee = { path = "../../../../shieldd/crates/core/component/fee", package = "shieldd-sdk-fee", default-features = false }
+shieldd-keys = { path = "../../../../shieldd/crates/core/keys", package = "shieldd-sdk-keys" }
+shieldd-num = { path = "../../../../shieldd/crates/core/num", package = "shieldd-sdk-num" }
+shieldd-proof-params = { path = "../../../../shieldd/crates/crypto/proof-params", package = "shieldd-sdk-proof-params", default-features = false }
+shieldd-proto = { path = "../../../../shieldd/crates/proto", package = "shieldd-sdk-proto", default-features = false }
+shieldd-sct = { path = "../../../../shieldd/crates/core/component/sct", package = "shieldd-sdk-sct", default-features = false }
+shieldd-shielded-pool = { path = "../../../../shieldd/crates/core/component/shielded-pool", package = "shieldd-sdk-shielded-pool", default-features = false }
+shieldd-tct = { path = "../../../../shieldd/crates/crypto/tct", package = "shieldd-sdk-tct" }
+shieldd-transaction = { path = "../../../../shieldd/crates/core/transaction", package = "shieldd-sdk-transaction", default-features = false }
 
 anyhow = "1.0.89"
 ark-ff = { version = "0.5.0", features = ["std"] }

@@ -26,9 +26,9 @@ You can get started today by integrating with the [Tempo testnet](https://docs.t
 ## Bankd admin
 
 The Bankd admin frontend, shared packages and browser Shieldd SDK live in this
-repository. See [admin setup](admin/README.md) for a Commonware localnet and browser
-prover, and [the migration breakdown](docs/ADMIN-MIGRATION.md) for effective changes
-and validation.
+repository under `typescript/`. See [admin setup](typescript/admin/README.md) for a
+Commonware localnet and browser prover, and [the migration breakdown](docs/ADMIN-MIGRATION.md)
+for effective changes and validation.
 
 ## What makes Tempo different
 

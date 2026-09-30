@@ -23,7 +23,7 @@ export function stateFile() {
   return path.resolve(
     process.env.AUDIT_DEMO_STATE ??
       path.join(
-        process.cwd().endsWith('/admin') ? '..' : '.',
+        process.cwd().endsWith('/admin') ? '../..' : '.',
         '.localnet/audit-demo/state.json'
       )
   )

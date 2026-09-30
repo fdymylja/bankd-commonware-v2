@@ -5,6 +5,11 @@ at `b462bd99f6b5bf0bb9df95135fda247eae980284`, and targets its
 `reece/bankd-scaffold` branch. The frontend runs in the same repository as the
 node and its pinned Shieldd submodule.
 
+The TypeScript workspace lives under `typescript/`: `admin/`,
+`packages/shared/`, `packages/shieldd-web/`, and its pnpm manifest and lockfile.
+Run frontend commands from there, or use `pnpm --dir typescript` from the
+repository root.
+
 ## How to review the diff
 
 The first commit, `837eba92a3caeb2b160f36a047c897cddffc9328`, imports `admin/` and
@@ -64,8 +69,8 @@ the old Cosmos address representation.
    waits for the finalized height observed at the start of an operation, avoiding
    an unreachable moving target on a fast localnet. Committed SCT anchors are
    still checked against the node before broadcast.
-5. **Workspace setup.** Root pnpm scripts, lockfile, package links and Next.js
-   transpilation let the frontend and browser SDK run from this monorepo.
+5. **Workspace setup.** The `typescript/` pnpm scripts, lockfile, package links and
+   Next.js transpilation let the frontend and browser SDK run from this monorepo.
 
 No Solidity, genesis configuration, consensus logic, embedded Shieldd source or
 private proof protocol was changed.
@@ -109,4 +114,4 @@ private proof protocol was changed.
 
 IBC client tuple decoding and packet commitment paths are tested with RPC
 fixtures. Cross-chain relaying and a deployed Safe have not been exercised in this
-one-chain browser run. See [admin setup](../admin/README.md) for reproducible commands.
+one-chain browser run. See [admin setup](../typescript/admin/README.md) for reproducible commands.

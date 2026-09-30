@@ -6,7 +6,7 @@ import { dirname, resolve } from 'node:path'
 const require = createRequire(import.meta.url)
 const { chromium } = require('@playwright/test')
 
-export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
+export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 export const ADMIN_URL = process.env.ADMIN_URL ?? 'http://localhost:34562'
 export const MNEMONIC =
   process.env.MNEMONIC ??

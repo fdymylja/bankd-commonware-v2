@@ -42,14 +42,3 @@ _
 *.profraw
 __pycache__/
 .bench-tmp/
-
-# Admin monorepo
-node_modules/
-.next*/
-*.tsbuildinfo
-admin/data/
-playwright-report/
-test-results/
-
-# Rebuilt from the pinned browser SDK crate
-packages/shieldd-web/wasm/

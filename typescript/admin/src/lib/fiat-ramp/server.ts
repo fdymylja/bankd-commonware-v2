@@ -8,7 +8,7 @@ export function repoRoot() {
   if (existsSync(path.join(cwd, 'infra/docker-compose.yml'))) {
     return cwd
   }
-  return path.resolve(cwd, '..')
+  return path.resolve(cwd, '../..')
 }
 
 export type CoreConfig = {

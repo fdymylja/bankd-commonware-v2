@@ -13,7 +13,7 @@ await native.default({ module_or_path: await readFile(new URL('index_bg.wasm', n
 
 test('shipped WASM is built from the monorepo pinned Shieldd revision', async () => {
   const provenance = JSON.parse(await readFile(new URL('../build-provenance.json', nativeUrl)))
-  const root = new URL('../../../', import.meta.url).pathname
+  const root = new URL('../../../../', import.meta.url).pathname
   const revision = execFileSync('git', ['-C', `${root}/shieldd`, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
   assert.equal(provenance.shielddRevision, revision)
   assert.equal(provenance.wasmSha256, createHash('sha256').update(await readFile(new URL('index_bg.wasm', nativeUrl))).digest('hex'))

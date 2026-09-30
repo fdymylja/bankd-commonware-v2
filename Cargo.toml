@@ -15,7 +15,7 @@ exclude = [
   "crates/nitro-attestation/fuzz",
   "crates/bankd-shield/vendor/cnidarium",
   "shieldd",
-  "packages/shieldd-web/crate",
+  "typescript/packages/shieldd-web/crate",
 ]
 members = [
   "bin/tempo",

@@ -34,7 +34,7 @@ const OUTPUT_LINE =
 // them here; read at request time so a reset needs no server restart.
 function demoIvks(): Array<{ label: string; ivk: string }> {
   try {
-    const file = path.join(process.cwd(), '..', '.localnet', 'audit-demo', 'ivks.json')
+    const file = path.join(process.cwd(), '../..', '.localnet', 'audit-demo', 'ivks.json')
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as Array<{
       label?: string
       ivk?: string
@@ -63,7 +63,7 @@ function configuredIvks(): Array<{ label: string; ivk: string }> {
 }
 
 function readerPath(): string {
-  return process.env.SHIELDD_NOTE_READER ?? path.join(process.cwd(), '..', '.dist', 'shieldd-note-reader')
+  return process.env.SHIELDD_NOTE_READER ?? path.join(process.cwd(), '../..', '.dist', 'shieldd-note-reader')
 }
 
 export async function POST(request: NextRequest) {

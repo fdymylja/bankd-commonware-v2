@@ -1,7 +1,8 @@
 # Bankd Commonware admin
 
-The admin and shared frontend packages live in this monorepo and use the node's
-EVM RPC and embedded Shieldd. See [the migration breakdown](../docs/ADMIN-MIGRATION.md)
+The admin, shared frontend packages and browser SDK live under `typescript/` in
+this monorepo and use the node's EVM RPC and embedded Shieldd.
+See [the migration breakdown](../../docs/ADMIN-MIGRATION.md)
 for supported operations, SDK provenance and differences from the Cosmos admin.
 
 ## Run locally
@@ -10,7 +11,7 @@ Initialize submodules and install dependencies from the repository root:
 
 ```bash
 git submodule update --init --recursive
-pnpm install --frozen-lockfile
+pnpm --dir typescript install --frozen-lockfile
 ```
 
 Start a disposable chain using the repository's Rust toolchain. `IBC_MODE=none`
@@ -30,7 +31,7 @@ scripts/bankd/prover.sh --warm transfer
 In a third terminal, start the frontend:
 
 ```bash
-BANKD_RPC_URL=http://127.0.0.1:8545 pnpm admin:dev
+BANKD_RPC_URL=http://127.0.0.1:8545 pnpm --dir typescript admin:dev
 ```
 
 Open http://localhost:34562. The generated localnet funds the standard development
@@ -51,13 +52,13 @@ it does not create clients or run a relayer.
 ## Build and verify
 
 ```bash
-pnpm admin:build
-pnpm shared:typecheck
-pnpm admin:test
-pnpm --filter bankd-admin test:safe
-pnpm --filter bankd-admin test:sdk-commonware
-pnpm --filter bankd-admin exec tsc --noEmit
-BANKD_RPC_URL=http://127.0.0.1:8545 pnpm --filter bankd-admin e2e:commonware
+pnpm --dir typescript admin:build
+pnpm --dir typescript shared:typecheck
+pnpm --dir typescript admin:test
+pnpm --dir typescript --filter bankd-admin test:safe
+pnpm --dir typescript --filter bankd-admin test:sdk-commonware
+pnpm --dir typescript --filter bankd-admin exec tsc --noEmit
+BANKD_RPC_URL=http://127.0.0.1:8545 pnpm --dir typescript --filter bankd-admin e2e:commonware
 ```
 
 The browser check submits real transactions against a disposable localnet and
@@ -73,9 +74,9 @@ only after changing the pinned Shieldd SDK or browser Rust wrapper:
 ```bash
 rustup target add wasm32-unknown-unknown
 # Install wasm-pack separately if it is not already available.
-pnpm --filter @bankd/shieldd-web sdk:build
-pnpm install --force --no-frozen-lockfile
-pnpm --filter bankd-admin test:sdk-commonware
+pnpm --dir typescript --filter @bankd/shieldd-web sdk:build
+pnpm --dir typescript install --force --no-frozen-lockfile
+pnpm --dir typescript --filter bankd-admin test:sdk-commonware
 ```
 
 The crate links directly to `shieldd/` in this repository. Its independent Cargo

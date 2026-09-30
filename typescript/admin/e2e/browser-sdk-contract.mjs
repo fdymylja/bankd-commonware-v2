@@ -20,7 +20,7 @@ test('packaged SDK rejects registrations without issued grants and certificates'
 
 test('packaged SDK provenance and schemas match embedded Shieldd', async () => {
   const provenance = JSON.parse(await readFile(new URL('../build-provenance.json', nativeUrl)))
-  const revision = execFileSync('git', ['-C', new URL('../../shieldd', import.meta.url).pathname, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+  const revision = execFileSync('git', ['-C', new URL('../../../shieldd', import.meta.url).pathname, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
   assert.equal(provenance.shielddRevision, revision)
   assert.equal(provenance.buildProfile, 'development')
   assert.equal(provenance.wasmSha256, createHash('sha256').update(await readFile(new URL('index_bg.wasm', nativeUrl))).digest('hex'))
