@@ -1,0 +1,30 @@
+syntax = "proto3";
+package mizufinance.poa.v1;
+
+import "amino/amino.proto";
+import "cosmos_proto/cosmos.proto";
+import "gogoproto/gogo.proto";
+import "mizufinance/poa/v1/params.proto";
+
+option go_package = "github.com/mizufinance/bankd/x/poa/types";
+
+// GenesisState defines the poa module's genesis state.
+message GenesisState {
+  // params defines all the parameters of the module.
+  Params params = 1 [
+    (gogoproto.nullable) = false,
+    (amino.dont_omitempty) = true
+  ];
+
+  // validator_access is the merged whitelist/blacklist map.
+  // true = whitelisted (can create validators, can unjail)
+  // false = blacklisted (can't create validators, can't unjail)
+  // absent = normal (can't create validators, can unjail)
+  repeated ValidatorAccess validator_access = 2;
+}
+
+// ValidatorAccess represents an entry in the validator access map.
+message ValidatorAccess {
+  string address = 1 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+  bool is_whitelisted = 2;
+}

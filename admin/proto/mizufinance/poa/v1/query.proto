@@ -1,0 +1,69 @@
+syntax = "proto3";
+package mizufinance.poa.v1;
+
+import "amino/amino.proto";
+import "gogoproto/gogo.proto";
+import "google/api/annotations.proto";
+import "mizufinance/poa/v1/params.proto";
+
+option go_package = "github.com/mizufinance/bankd/x/poa/types";
+
+// Query defines the gRPC querier service.
+service Query {
+  // Params queries the parameters of the module.
+  rpc Params(QueryParamsRequest) returns (QueryParamsResponse) {
+    option (google.api.http).get = "/poa/v1/params";
+  }
+
+  // Whitelist queries all whitelisted addresses.
+  rpc Whitelist(QueryWhitelistRequest) returns (QueryWhitelistResponse) {
+    option (google.api.http).get = "/poa/v1/whitelist";
+  }
+
+  // AccessStatus returns the access status of a validator address.
+  rpc AccessStatus(QueryAccessStatusRequest) returns (QueryAccessStatusResponse) {
+    option (google.api.http).get = "/poa/v1/access/{address}";
+  }
+
+  // Authority queries the module authority.
+  rpc Authority(QueryAuthorityRequest) returns (QueryAuthorityResponse) {
+    option (google.api.http).get = "/poa/v1/authority";
+  }
+}
+
+// QueryParamsRequest is request type for the Query/Params RPC method.
+message QueryParamsRequest {}
+
+// QueryParamsResponse is response type for the Query/Params RPC method.
+message QueryParamsResponse {
+  Params params = 1 [
+    (gogoproto.nullable) = false,
+    (amino.dont_omitempty) = true
+  ];
+}
+
+// QueryWhitelistRequest is request type for the Query/Whitelist RPC method.
+message QueryWhitelistRequest {}
+
+// QueryWhitelistResponse is response type for the Query/Whitelist RPC method.
+message QueryWhitelistResponse {
+  repeated string addresses = 1;
+}
+
+// QueryAccessStatusRequest is request type for the Query/AccessStatus RPC method.
+message QueryAccessStatusRequest {
+  string address = 1;
+}
+
+// QueryAccessStatusResponse is response type for the Query/AccessStatus RPC method.
+message QueryAccessStatusResponse {
+  string status = 1;
+}
+
+// QueryAuthorityRequest is request type for the Query/Authority RPC method.
+message QueryAuthorityRequest {}
+
+// QueryAuthorityResponse is response type for the Query/Authority RPC method.
+message QueryAuthorityResponse {
+  string authority = 1;
+}

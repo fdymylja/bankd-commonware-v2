@@ -1,0 +1,33 @@
+syntax = "proto3";
+package mizufinance.eem.v1;
+
+import "amino/amino.proto";
+import "cosmos_proto/cosmos.proto";
+import "gogoproto/gogo.proto";
+
+option go_package = "github.com/mizufinance/bankd/x/eem/types";
+
+// Params defines the set of module parameters.
+//
+// There are two mutually exclusive execution modes:
+// 1. Free mode: max_free_gas_limit > 0 - execution is free up to this gas limit
+// 2. Charged mode: max_free_gas_limit = 0 - charge gas_fee_per_gas per gas unit
+message Params {
+  option (amino.name) = "eem/params";
+  option (gogoproto.equal) = true;
+  option (gogoproto.goproto_stringer) = false;
+
+  // max_free_gas_limit is the maximum gas that can be used for free during
+  // private execution. If set to a non-zero value, execution is free up to
+  // this limit and gas_fee_per_gas is ignored. Default is 5,000,000.
+  uint64 max_free_gas_limit = 1;
+
+  // gas_fee_per_gas is the fee charged per gas unit when max_free_gas_limit is 0.
+  // This is charged to the user's intermediate account.
+  // Example: "0.0000001" means 0.0000001 tokens per gas unit.
+  string gas_fee_per_gas = 2 [
+    (cosmos_proto.scalar) = "cosmos.Dec",
+    (gogoproto.customtype) = "cosmossdk.io/math.LegacyDec",
+    (gogoproto.nullable) = false
+  ];
+}

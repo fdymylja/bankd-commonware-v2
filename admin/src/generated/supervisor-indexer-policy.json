@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "configVersion": 1,
+  "indexerVersion": "1.1.0",
+  "agreement": {
+    "threshold": "2/3",
+    "registeredIndexerCount": 3,
+    "requiredSignerCount": 2
+  },
+  "indexers": [
+    {
+      "id": "shinzo-1",
+      "signatureType": "ES256K",
+      "identity": "03daae30916c8fe8035dcaad2da7e49eb522e5a648409b5dab1714817f0b832cc1"
+    },
+    {
+      "id": "shinzo-2",
+      "signatureType": "ES256K",
+      "identity": "020a5a73b3294b787f2e1bc8116bbf1386718b7b5021df8b2c510a258ab9341a6c"
+    },
+    {
+      "id": "shinzo-3",
+      "signatureType": "ES256K",
+      "identity": "026277f49f84bcb2db1781d5d5ea5278f9e4baf3d8b59cf850f893aa864b2e2ab6"
+    }
+  ],
+  "regions": [
+    {
+      "id": "br-sp",
+      "label": "São Paulo",
+      "chainId": "regional-sp-1",
+      "ibcChannelToCentral": "channel-0",
+      "ibcDenom": "ubrl",
+      "participantCnpjs": [
+        "11222333000181"
+      ]
+    },
+    {
+      "id": "br-rj",
+      "label": "Rio de Janeiro",
+      "chainId": "regional-rj-1",
+      "ibcChannelToCentral": "channel-1",
+      "ibcDenom": "ubrl",
+      "participantCnpjs": []
+    }
+  ]
+}

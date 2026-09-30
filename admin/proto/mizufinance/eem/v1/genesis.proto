@@ -1,0 +1,13 @@
+syntax = "proto3";
+package mizufinance.eem.v1;
+
+import "gogoproto/gogo.proto";
+import "mizufinance/eem/v1/params.proto";
+
+option go_package = "github.com/mizufinance/bankd/x/eem/types";
+
+// GenesisState defines the eem module's genesis state.
+message GenesisState {
+  // params defines all the parameters of the module.
+  Params params = 1 [(gogoproto.nullable) = false];
+}

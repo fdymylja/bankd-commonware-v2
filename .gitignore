@@ -42,3 +42,11 @@ _
 *.profraw
 __pycache__/
 .bench-tmp/
+
+# Admin monorepo
+node_modules/
+.next*/
+*.tsbuildinfo
+admin/data/
+playwright-report/
+test-results/

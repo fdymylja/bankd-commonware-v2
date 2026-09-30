@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package mizufinance.unwrap.v1;
+
+import "amino/amino.proto";
+import "gogoproto/gogo.proto";
+
+option go_package = "github.com/mizufinance/bankd/x/unwrap/types";
+
+// GenesisState defines the module genesis state
+message GenesisState {
+  // Params defines all the parameters of the module.
+  Params params = 1 [(gogoproto.nullable) = false];
+}
+
+// Params defines the set of module parameters.
+message Params {
+  option (amino.name) = "unwrap/params";
+  option (gogoproto.equal) = true;
+
+  // bank_type is either: commercial or central.
+  string bank_type = 1;
+
+  // ibc_channel is the central bank's IBC channel (typically channel-0 if you connect to it first)
+  string ibc_channel = 2;
+  // ibc_channel_denom is the denomination used for IBC transfers on the central bank's channel (i.e. ubrl)
+  string ibc_channel_denom = 3;
+}

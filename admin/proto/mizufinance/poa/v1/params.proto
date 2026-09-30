@@ -1,0 +1,17 @@
+syntax = "proto3";
+package mizufinance.poa.v1;
+
+import "amino/amino.proto";
+import "cosmos_proto/cosmos.proto";
+import "gogoproto/gogo.proto";
+
+option go_package = "github.com/mizufinance/bankd/x/poa/types";
+
+// Params defines the parameters for the poa module.
+message Params {
+  option (amino.name) = "bankd/x/poa/Params";
+  option (gogoproto.equal) = true;
+
+  // admin is the bech32 address authorized to manage the validator set.
+  string admin = 1 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+}

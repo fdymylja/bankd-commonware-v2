@@ -1,0 +1,113 @@
+syntax = "proto3";
+package mizufinance.poa.v1;
+
+import "amino/amino.proto";
+import "cosmos/msg/v1/msg.proto";
+import "cosmos_proto/cosmos.proto";
+import "gogoproto/gogo.proto";
+import "google/protobuf/any.proto";
+import "mizufinance/poa/v1/params.proto";
+
+option go_package = "github.com/mizufinance/bankd/x/poa/types";
+
+// Msg defines the poa Msg service.
+service Msg {
+  option (cosmos.msg.v1.service) = true;
+
+  // AddValidator creates a new validator with authority-minted tokens.
+  rpc AddValidator(MsgAddValidator) returns (MsgAddValidatorResponse);
+
+  // AddWhitelist adds an address to the validator whitelist.
+  rpc AddWhitelist(MsgAddWhitelist) returns (MsgAddWhitelistResponse);
+
+  // RemoveWhitelist removes an address from the validator whitelist.
+  rpc RemoveWhitelist(MsgRemoveWhitelist) returns (MsgRemoveWhitelistResponse);
+
+  // RemoveValidator evicts a validator from the active set.
+  rpc RemoveValidator(MsgRemoveValidator) returns (MsgRemoveValidatorResponse);
+
+  // UpdateValidatorWeight sets a validator's power to an exact value.
+  rpc UpdateValidatorWeight(MsgUpdateValidatorWeight) returns (MsgUpdateValidatorWeightResponse);
+
+  // UpdateParams updates the module parameters.
+  rpc UpdateParams(MsgUpdateParams) returns (MsgUpdateParamsResponse);
+}
+
+// MsgAddValidator creates a new validator with authority-minted tokens.
+message MsgAddValidator {
+  option (cosmos.msg.v1.signer) = "authority";
+  option (amino.name) = "x/poa/MsgAddValidator";
+
+  string authority = 1 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+  google.protobuf.Any pub_key = 2 [(cosmos_proto.accepts_interface) = "cosmos.crypto.PubKey"];
+  string moniker = 3;
+  uint64 weight = 4;
+}
+
+// MsgAddValidatorResponse is the response type for MsgAddValidator.
+message MsgAddValidatorResponse {}
+
+// MsgAddWhitelist adds a validator address to the whitelist.
+message MsgAddWhitelist {
+  option (cosmos.msg.v1.signer) = "authority";
+  option (amino.name) = "x/poa/MsgAddWhitelist";
+
+  string authority = 1 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+  string validator_address = 2 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+}
+
+// MsgAddWhitelistResponse is the response type for MsgAddWhitelist.
+message MsgAddWhitelistResponse {}
+
+// MsgRemoveWhitelist removes a validator address from the whitelist.
+message MsgRemoveWhitelist {
+  option (cosmos.msg.v1.signer) = "authority";
+  option (amino.name) = "x/poa/MsgRemoveWhitelist";
+
+  string authority = 1 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+  string validator_address = 2 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+}
+
+// MsgRemoveWhitelistResponse is the response type for MsgRemoveWhitelist.
+message MsgRemoveWhitelistResponse {}
+
+// MsgRemoveValidator evicts a validator from the active set.
+message MsgRemoveValidator {
+  option (cosmos.msg.v1.signer) = "authority";
+  option (amino.name) = "x/poa/MsgRemoveValidator";
+
+  string authority = 1 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+  string validator_address = 2 [(cosmos_proto.scalar) = "cosmos.ValidatorAddressString"];
+}
+
+// MsgRemoveValidatorResponse is the response type for MsgRemoveValidator.
+message MsgRemoveValidatorResponse {}
+
+// MsgUpdateValidatorWeight sets a validator's consensus power to an exact value.
+message MsgUpdateValidatorWeight {
+  option (cosmos.msg.v1.signer) = "authority";
+  option (amino.name) = "x/poa/MsgUpdateValidatorWeight";
+
+  string authority = 1 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+  string validator_address = 2 [(cosmos_proto.scalar) = "cosmos.ValidatorAddressString"];
+  uint64 weight = 3;
+}
+
+// MsgUpdateValidatorWeightResponse is the response type for MsgUpdateValidatorWeight.
+message MsgUpdateValidatorWeightResponse {}
+
+// MsgUpdateParams is the Msg/UpdateParams request type.
+message MsgUpdateParams {
+  option (cosmos.msg.v1.signer) = "authority";
+  option (amino.name) = "x/poa/MsgUpdateParams";
+
+  string authority = 1 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+
+  Params params = 2 [
+    (gogoproto.nullable) = false,
+    (amino.dont_omitempty) = true
+  ];
+}
+
+// MsgUpdateParamsResponse is the response type for MsgUpdateParams.
+message MsgUpdateParamsResponse {}

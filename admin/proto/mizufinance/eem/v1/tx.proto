@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package mizufinance.eem.v1;
+
+option go_package = "github.com/mizufinance/bankd/x/eem/types";
+
+// Placeholder - no tx messages for eem module
+message Placeholder {}

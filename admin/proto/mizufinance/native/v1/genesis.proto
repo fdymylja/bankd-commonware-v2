@@ -1,0 +1,25 @@
+syntax = "proto3";
+package mizufinance.native.v1;
+
+import "amino/amino.proto";
+import "gogoproto/gogo.proto";
+
+option go_package = "github.com/mizufinance/bankd/x/native/types";
+
+// GenesisState defines the module genesis state
+message GenesisState {
+  // Params defines all the parameters of the module.
+  Params params = 1 [(gogoproto.nullable) = false];
+}
+
+// Params defines the set of module parameters.
+message Params {
+  option (amino.name) = "native/params";
+  option (gogoproto.equal) = true;
+  option (gogoproto.goproto_stringer) = false;
+
+  // admin_address is the address that can perform actions
+  string admin_address = 1;
+  // whitelisted_minters is a list of hex user addresses or hex smart contract addresses that can mint new tokens
+  repeated string whitelisted_minters = 2;
+}

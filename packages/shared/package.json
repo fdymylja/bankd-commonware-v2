@@ -1,0 +1,50 @@
+{
+  "name": "@bankd/shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts",
+    "./evm": "./src/evm/index.ts",
+    "./evm/*": "./src/evm/*.ts",
+    "./cosmos": "./src/cosmos/index.ts",
+    "./cosmos/*": "./src/cosmos/*.ts",
+    "./proto/*": "./src/proto/*.ts",
+    "./proto/*/bundle": "./src/proto/*/bundle.ts",
+    "./penumbra": "./src/penumbra/index.ts",
+    "./penumbra/*": "./src/penumbra/*.ts",
+    "./ibc": "./src/ibc/index.ts",
+    "./ibc/*": "./src/ibc/*.ts",
+    "./wallet": "./src/wallet/index.ts",
+    "./wallet/*": "./src/wallet/*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cosmjs/amino": "0.38.1",
+    "@cosmjs/encoding": "0.38.1",
+    "@cosmjs/proto-signing": "0.38.1",
+    "@cosmjs/stargate": "0.38.1",
+    "@cosmjs/tendermint-rpc": "0.38.1",
+    "@interchainjs/cosmos": "^1.19.3",
+    "@interchainjs/encoding": "^1.18.1",
+    "@interchainjs/math": "^1.18.1",
+    "@interchainjs/pubkey": "^1.19.1",
+    "@interchainjs/types": "^1.19.1",
+    "@mizufinance/bech32m": "https://github.com/mizufinance/penumbra-web/releases/download/bankd-demo.1/mizufinance-bech32m-18.0.1-bankd-demo.1.tgz",
+    "@mizufinance/protobuf": "file:../../admin/vendor/mizufinance-protobuf-11.0.1-bankd-demo.14.tgz",
+    "@scure/bip39": "^2.0.1",
+    "cosmjs-types": "0.9.0",
+    "@tanstack/react-query": "^5.80.6",
+    "ethers": "6.13.4",
+    "viem": "^2.45.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "5.5.4"
+  }
+}

@@ -1,0 +1,8 @@
+import { type NextRequest, NextResponse } from 'next/server'
+
+import type { ContractsAccessDecision } from '@/lib/auth/contractsAccess'
+import { type ContractInventory, InventoryUnavailableError } from '@/lib/contracts/deployed'
+type InventoryDependencies = { authorize(request: NextRequest): Promise<ContractsAccessDecision>; list(wallet: string): Promise<ContractInventory> }
+export function createContractsGET(dependencies: InventoryDependencies) { return async (request: NextRequest) => { const access=await dependencies.authorize(request);if(!access.granted)return access.response;if([...request.nextUrl.searchParams].length)return NextResponse.json({error:'Contract inventory scope cannot be selected by the client'},{status:400});try{return NextResponse.json(await dependencies.list(access.access.wallet),{headers:{'Cache-Control':'no-store'}})}catch(error){console.error('[contracts] Failed to list deployed contracts:',error);return NextResponse.json({error:'Failed to establish trusted contract inventory'},{status:error instanceof InventoryUnavailableError?503:502})} } }
+type CapabilityDependencies = { authorize(request: NextRequest): Promise<ContractsAccessDecision>; chainId: number }
+export function createCapabilitiesGET(dependencies: CapabilityDependencies) { return async (request: NextRequest) => { const decision=await dependencies.authorize(request);if(!decision.granted)return decision.response;return NextResponse.json({subject:decision.access.subject,wallet:decision.access.wallet,chainId:dependencies.chainId,canRead:true,canWrite:true},{headers:{'Cache-Control':'no-store'}}) } }

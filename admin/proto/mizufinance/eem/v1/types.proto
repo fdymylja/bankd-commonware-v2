@@ -1,0 +1,34 @@
+syntax = "proto3";
+package mizufinance.eem.v1;
+
+import "gogoproto/gogo.proto";
+
+option go_package = "github.com/mizufinance/bankd/x/eem/types";
+
+// IBCSenderInfo stores information about the original IBC sender for cross-chain execution.
+// This allows any IBC-connected chain to trigger smart contract execution.
+message IBCSenderInfo {
+  option (gogoproto.equal) = true;
+  option (gogoproto.goproto_stringer) = true;
+
+  // sender_address is the bech32 address of the original sender on the source chain
+  // (e.g., "cosmos1...", "osmo1...", "penumbra1...")
+  string sender_address = 1;
+
+  // ibc_destination_channel is the channel on this chain where the packet was received
+  // (e.g., "channel-0")
+  string ibc_destination_channel = 2;
+
+  // contract_address is the EVM contract being executed
+  string contract_address = 3;
+
+  // source_denom is the denom as it appeared in the IBC packet from the source chain
+  // (e.g., "uatom" for native sends, "transfer/channel-X/utoken" for forwarded tokens)
+  string source_denom = 4;
+
+  // local_denom is the denom as it exists on THIS chain after IBC processing
+  // For native tokens being received: "ibc/HASH" format
+  // For returning tokens (unwinding): original base denom (e.g., "uatom")
+  // This is computed using GetDenomForThisChain()
+  string local_denom = 5;
+}
