@@ -1,0 +1,3 @@
+node_modules/
+dist/
+proving-keys/*.bin

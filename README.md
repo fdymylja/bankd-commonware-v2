@@ -23,12 +23,13 @@ The blockchain for payments at scale.
 
 You can get started today by integrating with the [Tempo testnet](https://docs.tempo.xyz/quickstart/integrate-tempo), [building on Tempo](https://docs.tempo.xyz/guide/use-accounts), [running a Tempo node](https://docs.tempo.xyz/guide/node), reading the [Tempo protocol specs](https://docs.tempo.xyz/protocol) or by [building with Tempo SDKs](https://docs.tempo.xyz/sdk).
 
-## Bankd admin
+## Bankd TypeScript applications
 
-The Bankd admin frontend, shared packages and browser Shieldd SDK live in this
-repository under `typescript/`. See [admin setup](typescript/admin/README.md) for a
-Commonware localnet and browser prover, and [the migration breakdown](docs/ADMIN-MIGRATION.md)
-for effective changes and validation.
+The admin frontend, Expo mobile wallet, shared packages and browser Shieldd SDK
+live under `typescript/` in this monorepo. See [admin setup](typescript/admin/README.md)
+or [mobile setup](typescript/mobile/README.md) for local chain/prover commands.
+The effective changes are documented in the [admin](docs/ADMIN-MIGRATION.md) and
+[mobile](docs/MOBILE-MIGRATION.md) migration breakdowns.
 
 ## What makes Tempo different
 

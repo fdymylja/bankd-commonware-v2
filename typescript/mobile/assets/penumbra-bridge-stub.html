@@ -1,0 +1,1093 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Penumbra Bridge</title>
+  <style>
+    /* Hidden WebView — no visible UI needed */
+    body { margin: 0; padding: 0; background: transparent; font-size: 0; }
+  </style>
+</head>
+<body>
+<script>
+/**
+ * Penumbra WebView Bridge
+ *
+ * This runs inside a hidden React Native WebView. It:
+ * 1. Loads @mizufinance/wasm modules
+ * 2. Manages IndexedDB for notes, SCT, params
+ * 3. Syncs compact blocks from Penumbra chain via gRPC-web
+ * 4. Responds to commands from React Native via postMessage
+ *
+ * IMPORTANT: This is a STUB implementation. The actual WASM modules
+ * (@mizufinance/wasm) must be served alongside this HTML or bundled in.
+ * In development, the WebView loads from the Metro dev server which can
+ * serve the WASM bundles. In production, a build step bundles everything.
+ *
+ * For now, this implements the full message protocol with the bridge-protocol.ts
+ * types, and stubs out WASM calls that will be connected when the WASM
+ * bundle pipeline is set up.
+ */
+
+// =============================================================================
+// State
+// =============================================================================
+
+let isInitialized = false;
+let grpcUrl = '';
+let chainId = '';
+let proverUrl = 'http://localhost:8090';
+let fvkBytes = null; // Uint8Array
+let spendKeyBytes = null; // Uint8Array
+let isSyncing = false;
+let isStopping = false;
+let syncController = null;
+
+// WASM module references (loaded dynamically)
+let wasmKeys = null;
+let wasmBuild = null;
+let wasmAsset = null;
+let wasmPlanner = null;
+let ViewServerClass = null;
+let viewServer = null;
+
+// =============================================================================
+// Message Transport
+// =============================================================================
+
+function sendToRN(event) {
+  if (window.ReactNativeWebView) {
+    window.ReactNativeWebView.postMessage(JSON.stringify(event));
+  }
+}
+
+function sendError(message, requestId, stack) {
+  sendToRN({ type: 'error', requestId: requestId, message: message, stack: stack });
+}
+
+// Listen for commands from React Native
+window.addEventListener('message', function(event) {
+  try {
+    const cmd = JSON.parse(event.data);
+    handleCommand(cmd);
+  } catch (e) {
+    sendError('Failed to parse command: ' + e.message, undefined, e.stack);
+  }
+});
+
+// Also handle Android's document.addEventListener
+document.addEventListener('message', function(event) {
+  try {
+    const cmd = JSON.parse(event.data);
+    handleCommand(cmd);
+  } catch (e) {
+    sendError('Failed to parse command: ' + e.message, undefined, e.stack);
+  }
+});
+
+// =============================================================================
+// Command Handler
+// =============================================================================
+
+async function handleCommand(cmd) {
+  try {
+    switch (cmd.type) {
+      case 'init':
+        await handleInit(cmd);
+        break;
+      case 'startSync':
+        await handleStartSync(cmd);
+        break;
+      case 'stopSync':
+        handleStopSync(cmd);
+        break;
+      case 'getBalances':
+        await handleGetBalances(cmd);
+        break;
+      case 'getAddress':
+        await handleGetAddress(cmd);
+        break;
+      case 'getEphemeralAddress':
+        await handleGetEphemeralAddress(cmd);
+        break;
+      case 'getTransparentAddress':
+        await handleGetTransparentAddress(cmd);
+        break;
+      case 'planTransaction':
+        await handlePlanTransaction(cmd);
+        break;
+      case 'buildTransaction':
+        await handleBuildTransaction(cmd);
+        break;
+      case 'broadcastTransaction':
+        await handleBroadcastTransaction(cmd);
+        break;
+      case 'getSyncStatus':
+        handleGetSyncStatus(cmd);
+        break;
+      case 'clearData':
+        await handleClearData(cmd);
+        break;
+      default:
+        sendError('Unknown command: ' + cmd.type, cmd.requestId);
+    }
+  } catch (e) {
+    sendError(e.message, cmd.requestId, e.stack);
+  }
+}
+
+// =============================================================================
+// IndexedDB Setup
+// =============================================================================
+
+const DB_NAME = 'penumbra-native-wallet';
+const DB_VERSION = 5;
+
+const IDB_TABLES = {
+  TREE_COMMITMENTS: 'TREE_COMMITMENTS',
+  TREE_HASHES: 'TREE_HASHES',
+  TREE_LAST_POSITION: 'TREE_LAST_POSITION',
+  TREE_LAST_FORGOTTEN: 'TREE_LAST_FORGOTTEN',
+  SPENDABLE_NOTES: 'SPENDABLE_NOTES',
+  SWAPS: 'SWAPS',
+  FULL_SYNC_HEIGHT: 'FULL_SYNC_HEIGHT',
+  FMD_PARAMETERS: 'FMD_PARAMETERS',
+  APP_PARAMETERS: 'APP_PARAMETERS',
+  GAS_PRICES: 'GAS_PRICES',
+  EPOCHS: 'EPOCHS',
+};
+
+let db = null;
+
+function openDatabase() {
+  return new Promise(function(resolve, reject) {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onerror = function() { reject(request.error); };
+    request.onsuccess = function() { resolve(request.result); };
+    request.onupgradeneeded = function(event) {
+      const db = event.target.result;
+      const stores = [
+        'TREE_COMMITMENTS', 'TREE_HASHES', 'TREE_LAST_POSITION',
+        'TREE_LAST_FORGOTTEN', 'SPENDABLE_NOTES', 'SWAPS',
+        'FULL_SYNC_HEIGHT', 'FMD_PARAMETERS', 'APP_PARAMETERS',
+        'GAS_PRICES', 'EPOCHS', 'ibcDenoms',
+      ];
+      for (const name of stores) {
+        if (!db.objectStoreNames.contains(name)) {
+          db.createObjectStore(name);
+        }
+      }
+    };
+  });
+}
+
+async function getDB() {
+  if (!db) {
+    db = await openDatabase();
+  }
+  return db;
+}
+
+function idbGet(storeName, key) {
+  return new Promise(async function(resolve, reject) {
+    const database = await getDB();
+    const tx = database.transaction(storeName, 'readonly');
+    const store = tx.objectStore(storeName);
+    const request = store.get(key);
+    request.onsuccess = function() { resolve(request.result); };
+    request.onerror = function() { reject(request.error); };
+  });
+}
+
+function idbPut(storeName, value, key) {
+  return new Promise(async function(resolve, reject) {
+    const database = await getDB();
+    const tx = database.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    const request = store.put(value, key);
+    request.onsuccess = function() { resolve(); };
+    request.onerror = function() { reject(request.error); };
+  });
+}
+
+function idbGetAll(storeName) {
+  return new Promise(async function(resolve, reject) {
+    const database = await getDB();
+    const tx = database.transaction(storeName, 'readonly');
+    const store = tx.objectStore(storeName);
+    const request = store.getAll();
+    request.onsuccess = function() { resolve(request.result); };
+    request.onerror = function() { reject(request.error); };
+  });
+}
+
+function idbGetAllKeys(storeName) {
+  return new Promise(async function(resolve, reject) {
+    const database = await getDB();
+    const tx = database.transaction(storeName, 'readonly');
+    const store = tx.objectStore(storeName);
+    const request = store.getAllKeys();
+    request.onsuccess = function() { resolve(request.result); };
+    request.onerror = function() { reject(request.error); };
+  });
+}
+
+function idbDelete(storeName, key) {
+  return new Promise(async function(resolve, reject) {
+    const database = await getDB();
+    const tx = database.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    const request = store.delete(key);
+    request.onsuccess = function() { resolve(); };
+    request.onerror = function() { reject(request.error); };
+  });
+}
+
+function idbClear(storeName) {
+  return new Promise(async function(resolve, reject) {
+    const database = await getDB();
+    const tx = database.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    const request = store.clear();
+    request.onsuccess = function() { resolve(); };
+    request.onerror = function() { reject(request.error); };
+  });
+}
+
+// =============================================================================
+// Base64 helpers
+// =============================================================================
+
+function base64ToBytes(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+function bytesToHex(bytes) {
+  return '0x' + Array.from(bytes).map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+}
+
+// =============================================================================
+// gRPC-web helpers
+// =============================================================================
+
+function createGrpcWebRequest(requestBytes) {
+  const frame = new Uint8Array(5 + requestBytes.length);
+  frame[0] = 0;
+  const len = requestBytes.length;
+  frame[1] = (len >> 24) & 0xff;
+  frame[2] = (len >> 16) & 0xff;
+  frame[3] = (len >> 8) & 0xff;
+  frame[4] = len & 0xff;
+  frame.set(requestBytes, 5);
+  return bytesToBase64(frame);
+}
+
+function parseGrpcWebResponse(base64Response) {
+  const responseBytes = base64ToBytes(base64Response);
+  if (responseBytes.length < 5) return null;
+  
+  const flags = responseBytes[0];
+  // Skip trailer frames
+  if (flags === 0x80) return null;
+  
+  const msgLen = (responseBytes[1] << 24) | (responseBytes[2] << 16) | (responseBytes[3] << 8) | responseBytes[4];
+  if (msgLen === 0 || responseBytes.length < 5 + msgLen) return null;
+  
+  return responseBytes.slice(5, 5 + msgLen);
+}
+
+function parseAllGrpcWebFrames(base64Response) {
+  const responseBytes = base64ToBytes(base64Response);
+  const frames = [];
+  let offset = 0;
+
+  while (offset + 5 <= responseBytes.length) {
+    const flags = responseBytes[offset];
+    const msgLen = (responseBytes[offset + 1] << 24) | (responseBytes[offset + 2] << 16) |
+                   (responseBytes[offset + 3] << 8) | responseBytes[offset + 4];
+    offset += 5;
+    if (msgLen === 0 || offset + msgLen > responseBytes.length) break;
+    if (flags === 0) {
+      frames.push(responseBytes.slice(offset, offset + msgLen));
+    }
+    offset += msgLen;
+  }
+  return frames;
+}
+
+// =============================================================================
+// Init Handler
+// =============================================================================
+
+async function handleInit(cmd) {
+  try {
+    grpcUrl = cmd.grpcUrl;
+    chainId = cmd.chainId;
+    proverUrl = cmd.proverUrl || proverUrl;
+    fvkBytes = base64ToBytes(cmd.fvk);
+    spendKeyBytes = base64ToBytes(cmd.spendKey);
+
+    // Open IndexedDB
+    await getDB();
+
+    // Load WASM modules
+    // NOTE: These imports assume the WASM bundles are available at runtime.
+    // During development, they'll be served by the dev server.
+    // For production, a build step must bundle them into this HTML.
+    try {
+      wasmKeys = await import('@mizufinance/wasm/keys');
+      wasmBuild = await import('@mizufinance/wasm/build');
+      wasmAsset = await import('@mizufinance/wasm/asset');
+      wasmPlanner = await import('@mizufinance/wasm/planner');
+      const viewServerMod = await import('@mizufinance/wasm/view-server');
+      ViewServerClass = viewServerMod.ViewServer;
+    } catch (wasmError) {
+      // WASM not available — run in degraded mode
+      // Balance queries from IDB still work, sync and tx won't
+      console.warn('[Bridge] WASM modules not available:', wasmError.message);
+      console.warn('[Bridge] Running in degraded mode — sync and transactions disabled');
+    }
+
+    isInitialized = true;
+    sendToRN({ type: 'initResult', requestId: cmd.requestId, success: true });
+  } catch (e) {
+    sendToRN({ type: 'initResult', requestId: cmd.requestId, success: false, error: e.message });
+  }
+}
+
+// =============================================================================
+// SCT Storage (for ViewServer)
+// =============================================================================
+
+async function loadStoredTree() {
+  const lastPosition = await idbGet('TREE_LAST_POSITION', 'last_position');
+  const lastForgotten = await idbGet('TREE_LAST_FORGOTTEN', 'last_forgotten');
+  const hashes = await idbGetAll('TREE_HASHES');
+  const commitments = await idbGetAll('TREE_COMMITMENTS');
+
+  const sortedHashes = (hashes || []).slice().sort(function(a, b) {
+    const posA = a.position.epoch * 4294967296 + a.position.block * 65536 + a.position.commitment;
+    const posB = b.position.epoch * 4294967296 + b.position.block * 65536 + b.position.commitment;
+    if (posA !== posB) return posA - posB;
+    return a.height - b.height;
+  });
+
+  return {
+    last_position: lastPosition || { Position: { epoch: 0, block: 0, commitment: 0 } },
+    last_forgotten: lastForgotten || 0n,
+    hashes: sortedHashes,
+    commitments: commitments || [],
+  };
+}
+
+async function saveScanResult(result) {
+  const database = await getDB();
+  const storeNames = [
+    'SPENDABLE_NOTES', 'SWAPS', 'TREE_LAST_POSITION', 'TREE_LAST_FORGOTTEN',
+    'TREE_HASHES', 'TREE_COMMITMENTS', 'FULL_SYNC_HEIGHT',
+  ];
+  const tx = database.transaction(storeNames, 'readwrite');
+
+  // Save new notes
+  for (const note of result.newNotes) {
+    const noteJson = note.toJson();
+    const commitmentInner = noteJson.noteCommitment && noteJson.noteCommitment.inner;
+    if (commitmentInner) {
+      tx.objectStore('SPENDABLE_NOTES').put(noteJson, commitmentInner);
+    }
+  }
+
+  // Save new swaps
+  for (const swap of result.newSwaps) {
+    const swapJson = swap.toJson();
+    const commitmentInner = swapJson.swapCommitment && swapJson.swapCommitment.inner;
+    if (commitmentInner) {
+      tx.objectStore('SWAPS').put(swapJson, commitmentInner);
+    }
+  }
+
+  // Save SCT updates
+  const sctUpdates = result.sctUpdates;
+
+  if (sctUpdates.set_position) {
+    tx.objectStore('TREE_LAST_POSITION').put(sctUpdates.set_position, 'last_position');
+  }
+  if (sctUpdates.set_forgotten !== undefined) {
+    tx.objectStore('TREE_LAST_FORGOTTEN').put(sctUpdates.set_forgotten, 'last_forgotten');
+  }
+
+  for (const hash of sctUpdates.store_hashes) {
+    const position = hash.position.epoch * 65536 * 65536 + hash.position.block * 65536 + hash.position.commitment;
+    const key = position + ':' + hash.height;
+    tx.objectStore('TREE_HASHES').put(hash, key);
+  }
+
+  for (const commitment of sctUpdates.store_commitments) {
+    tx.objectStore('TREE_COMMITMENTS').put(commitment, commitment.commitment.inner);
+  }
+
+  // Delete ranges
+  if (sctUpdates.delete_ranges && sctUpdates.delete_ranges.length > 0) {
+    const hashStore = tx.objectStore('TREE_HASHES');
+    // NOTE: getAllKeys in a readwrite transaction is expensive but necessary
+    const keysReq = hashStore.getAllKeys();
+    keysReq.onsuccess = function() {
+      const allKeys = keysReq.result;
+      for (const deleteRange of sctUpdates.delete_ranges) {
+        const startPos = deleteRange.positions.start.epoch * 65536 * 65536 +
+                         deleteRange.positions.start.block * 65536 +
+                         deleteRange.positions.start.commitment;
+        const endPos = deleteRange.positions.end.epoch * 65536 * 65536 +
+                       deleteRange.positions.end.block * 65536 +
+                       deleteRange.positions.end.commitment;
+        for (const key of allKeys) {
+          const keyStr = String(key);
+          if (keyStr.includes(':')) {
+            const parts = keyStr.split(':');
+            const position = parseInt(parts[0], 10);
+            const height = parseInt(parts[1], 10);
+            if (position >= startPos && position < endPos && height < deleteRange.below_height) {
+              hashStore.delete(key);
+            }
+          }
+        }
+      }
+    };
+  }
+
+  // Update sync height
+  tx.objectStore('FULL_SYNC_HEIGHT').put(result.height, 'height');
+
+  return new Promise(function(resolve, reject) {
+    tx.oncomplete = resolve;
+    tx.onerror = function() { reject(tx.error); };
+  });
+}
+
+async function getLastSyncedHeight() {
+  const height = await idbGet('FULL_SYNC_HEIGHT', 'height');
+  return height ? BigInt(height) : 0n;
+}
+
+// =============================================================================
+// Chain parameter saving
+// =============================================================================
+
+let hasSavedInitialParams = false;
+
+async function fetchAndSaveAppParameters() {
+  try {
+    const { AppParametersRequest, AppParametersResponse } = await import(
+      '@mizufinance/protobuf/penumbra/core/app/v1/app_pb'
+    );
+    const request = new AppParametersRequest({});
+    const base64Request = createGrpcWebRequest(request.toBinary());
+
+    const response = await fetch(grpcUrl + '/penumbra.core.app.v1.QueryService/AppParameters', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/grpc-web-text', 'Accept': 'application/grpc-web-text' },
+      body: base64Request,
+    });
+    if (!response.ok) return;
+
+    const messageBytes = parseGrpcWebResponse(await response.text());
+    if (!messageBytes) return;
+    const appParamsResponse = AppParametersResponse.fromBinary(messageBytes);
+
+    if (appParamsResponse.appParameters) {
+      await idbPut('APP_PARAMETERS', appParamsResponse.appParameters.toJson(), 'params');
+
+      // Extract FMD parameters
+      const shieldedPoolParams = appParamsResponse.appParameters.shieldedPoolParams;
+      if (shieldedPoolParams && shieldedPoolParams.fixedFmdParams) {
+        await idbPut('FMD_PARAMETERS', shieldedPoolParams.fixedFmdParams.toJson(), 'params');
+      } else if (shieldedPoolParams && shieldedPoolParams.fmdMetaParams) {
+        const { FmdParameters } = await import(
+          '@mizufinance/protobuf/penumbra/core/component/shielded_pool/v1/shielded_pool_pb'
+        );
+        let precisionBits = 0;
+        const algo = shieldedPoolParams.fmdMetaParams.algorithm;
+        if (algo.case === 'fixedPrecisionBits') precisionBits = algo.value;
+        else if (algo.case === 'slidingWindow') precisionBits = 4;
+        const fmdParams = new FmdParameters({ precisionBits: precisionBits, asOfBlockHeight: 0n });
+        await idbPut('FMD_PARAMETERS', fmdParams.toJson(), 'params');
+      }
+
+      // Extract gas prices
+      const feeParams = appParamsResponse.appParameters.feeParams;
+      if (feeParams && feeParams.fixedGasPrices && feeParams.fixedGasPrices.assetId) {
+        const gasPricesJson = feeParams.fixedGasPrices.toJson();
+        let assetIdKey;
+        if (feeParams.fixedGasPrices.assetId.inner) {
+          assetIdKey = bytesToBase64(feeParams.fixedGasPrices.assetId.inner);
+        } else if (wasmAsset) {
+          const stakingId = await wasmAsset.assetIdFromBaseDenom('upenumbra');
+          assetIdKey = bytesToBase64(stakingId.inner);
+        } else {
+          assetIdKey = 'default';
+        }
+        await idbPut('GAS_PRICES', gasPricesJson, assetIdKey);
+      }
+    }
+  } catch (e) {
+    console.warn('[Bridge] Failed to fetch app parameters:', e);
+  }
+}
+
+// =============================================================================
+// Compact block fetching
+// =============================================================================
+
+const RANGE_BATCH_SIZE = 10000;
+const FLUSH_INTERVAL = 5000;
+
+async function fetchCompactBlockRange(startHeight, endHeight) {
+  const { CompactBlockRangeRequest, CompactBlockRangeResponse } = await import(
+    '@mizufinance/protobuf/penumbra/core/component/compact_block/v1/compact_block_pb'
+  );
+  const request = new CompactBlockRangeRequest({
+    startHeight: BigInt(startHeight),
+    endHeight: BigInt(endHeight + 1),
+    keepAlive: false,
+  });
+  const base64Request = createGrpcWebRequest(request.toBinary());
+
+  const response = await fetch(grpcUrl + '/penumbra.core.component.compact_block.v1.QueryService/CompactBlockRange', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/grpc-web-text', 'Accept': 'application/grpc-web-text' },
+    body: base64Request,
+  });
+  if (!response.ok) throw new Error('CompactBlockRange failed: ' + response.status);
+
+  const base64Body = await response.text();
+  const messageFrames = parseAllGrpcWebFrames(base64Body);
+
+  const blocks = [];
+  for (const frame of messageFrames) {
+    const rangeResponse = CompactBlockRangeResponse.fromBinary(frame);
+    if (rangeResponse.compactBlock) blocks.push(rangeResponse.compactBlock);
+  }
+  return blocks;
+}
+
+async function getChainHeight() {
+  try {
+    // Use Tendermint RPC status endpoint
+    const response = await fetch(grpcUrl.replace(/\/+$/, '') + '/status');
+    if (!response.ok) return 0;
+    const data = await response.json();
+    const height = (data.result && data.result.sync_info && data.result.sync_info.latest_block_height)
+      || (data.syncInfo && data.syncInfo.latestBlockHeight)
+      || 0;
+    return typeof height === 'string' ? parseInt(height, 10) : height;
+  } catch (e) {
+    return 0;
+  }
+}
+
+// =============================================================================
+// Sync Handler
+// =============================================================================
+
+async function handleStartSync(cmd) {
+  if (!isInitialized) {
+    sendError('Not initialized', cmd.requestId);
+    return;
+  }
+  if (isSyncing) {
+    sendToRN({ type: 'syncStarted', requestId: cmd.requestId });
+    return;
+  }
+  if (!ViewServerClass) {
+    sendError('WASM not available — sync disabled', cmd.requestId);
+    return;
+  }
+
+  isSyncing = true;
+  isStopping = false;
+  sendToRN({ type: 'syncStarted', requestId: cmd.requestId });
+
+  try {
+    // Reconstruct FVK protobuf
+    const { FullViewingKey } = await import('@mizufinance/protobuf/penumbra/core/keys/v1/keys_pb');
+    const fvk = new FullViewingKey({ inner: fvkBytes });
+
+    // Initialize ViewServer
+    if (!viewServer) {
+      viewServer = await ViewServerClass.initialize({
+        fullViewingKey: fvk,
+        getStoredTree: loadStoredTree,
+        idbConstants: { name: DB_NAME, version: DB_VERSION, tables: IDB_TABLES },
+      });
+    }
+
+    // Fetch app parameters
+    await fetchAndSaveAppParameters();
+
+    // Get starting height
+    const lastHeight = await getLastSyncedHeight();
+    let currentHeight = lastHeight === 0n ? -1 : Number(lastHeight);
+    let chainHeight = await getChainHeight();
+
+    console.log('[Bridge] Starting sync from ' + currentHeight + ' to ' + chainHeight);
+
+    // Main sync loop
+    while (!isStopping && currentHeight < chainHeight) {
+      const nextHeight = currentHeight + 1;
+      const batchEnd = Math.min(nextHeight + RANGE_BATCH_SIZE - 1, chainHeight);
+
+      let blocks;
+      try {
+        blocks = await fetchCompactBlockRange(nextHeight, batchEnd);
+      } catch (e) {
+        console.warn('[Bridge] Fetch failed, retrying...', e.message);
+        await new Promise(function(r) { setTimeout(r, 1000); });
+        continue;
+      }
+
+      if (blocks.length === 0) {
+        await new Promise(function(r) { setTimeout(r, 1000); });
+        continue;
+      }
+
+      let lastFlushHeight = currentHeight;
+      for (const block of blocks) {
+        if (isStopping) break;
+        const blockHeight = Number(block.height);
+
+        let scannerWantsFlush;
+        if (blockHeight === 0 || blockHeight === 1) {
+          await viewServer.scanGenesisChunk(0n, block, false);
+          scannerWantsFlush = await viewServer.genesisAdvice(block);
+        } else {
+          scannerWantsFlush = await viewServer.scanBlock(block, false);
+        }
+
+        const shouldFlush = scannerWantsFlush || blockHeight - lastFlushHeight >= FLUSH_INTERVAL || blockHeight >= chainHeight;
+        if (shouldFlush) {
+          const result = viewServer.flushUpdates();
+          await saveScanResult(result);
+          lastFlushHeight = blockHeight;
+
+          if (result.newNotes.length > 0) {
+            sendToRN({ type: 'notesFound', count: result.newNotes.length, height: blockHeight });
+          }
+        }
+        currentHeight = blockHeight;
+      }
+
+      // Flush at end of batch
+      if (currentHeight > lastFlushHeight) {
+        const result = viewServer.flushUpdates();
+        await saveScanResult(result);
+        if (result.newNotes.length > 0) {
+          sendToRN({ type: 'notesFound', count: result.newNotes.length, height: currentHeight });
+        }
+      }
+
+      sendToRN({
+        type: 'syncProgress',
+        currentHeight: currentHeight,
+        targetHeight: chainHeight,
+        isSynced: currentHeight >= chainHeight,
+      });
+
+      chainHeight = await getChainHeight();
+    }
+
+    // Watch for new blocks
+    if (!isStopping) {
+      sendToRN({
+        type: 'syncProgress',
+        currentHeight: currentHeight,
+        targetHeight: chainHeight,
+        isSynced: true,
+      });
+
+      while (!isStopping) {
+        await new Promise(function(r) { setTimeout(r, 2000); });
+        const newHeight = await getChainHeight();
+        if (newHeight > chainHeight) {
+          chainHeight = newHeight;
+          const startH = currentHeight + 1;
+          let blocks;
+          try { blocks = await fetchCompactBlockRange(startH, chainHeight); } catch (e) { continue; }
+          for (const block of blocks) {
+            if (isStopping) break;
+            await viewServer.scanBlock(block, false);
+            currentHeight = Number(block.height);
+          }
+          const result = viewServer.flushUpdates();
+          await saveScanResult(result);
+          if (result.newNotes.length > 0) {
+            sendToRN({ type: 'notesFound', count: result.newNotes.length, height: currentHeight });
+          }
+          sendToRN({
+            type: 'syncProgress',
+            currentHeight: currentHeight,
+            targetHeight: chainHeight,
+            isSynced: true,
+          });
+        }
+      }
+    }
+  } catch (e) {
+    sendError('Sync error: ' + e.message, cmd.requestId, e.stack);
+  } finally {
+    isSyncing = false;
+  }
+}
+
+function handleStopSync(cmd) {
+  isStopping = true;
+  sendToRN({ type: 'syncStopped', requestId: cmd.requestId });
+}
+
+// =============================================================================
+// Balance Handler
+// =============================================================================
+
+async function handleGetBalances(cmd) {
+  try {
+    const allNotes = await idbGetAll('SPENDABLE_NOTES');
+    const accountFilter = cmd.accountIndex;
+
+    // Group by asset
+    const balanceMap = {};
+    for (const noteJson of allNotes) {
+      // Skip spent notes
+      if (noteJson.heightSpent) continue;
+
+      const assetId = noteJson.note && noteJson.note.value && noteJson.note.value.assetId && noteJson.note.value.assetId.inner;
+      const addressIndex = (noteJson.addressIndex && noteJson.addressIndex.account) || 0;
+      if (!assetId) continue;
+      if (accountFilter !== undefined && addressIndex !== accountFilter) continue;
+
+      const amount = noteJson.note.value.amount;
+      const amountBigInt = BigInt(amount && amount.hi || '0') * BigInt('18446744073709551616') + BigInt(amount && amount.lo || '0');
+
+      const key = assetId + ':' + addressIndex;
+      if (balanceMap[key]) {
+        balanceMap[key].amount = (BigInt(balanceMap[key].amount) + amountBigInt).toString();
+      } else {
+        balanceMap[key] = {
+          assetIdHex: '(base64:' + assetId + ')',
+          amount: amountBigInt.toString(),
+          accountIndex: addressIndex,
+        };
+      }
+    }
+
+    // Fetch metadata for each asset (best effort)
+    const balances = [];
+    for (const key of Object.keys(balanceMap)) {
+      const entry = balanceMap[key];
+      const assetIdBase64 = key.split(':')[0];
+
+      // Try to look up metadata from IDB ibcDenoms store
+      let metadata = undefined;
+      try {
+        const allDenoms = await idbGetAll('ibcDenoms');
+        for (const denom of allDenoms) {
+          // Match by base64 asset ID if possible
+          if (denom.assetIdHex && denom.assetIdHex === entry.assetIdHex) {
+            metadata = {
+              symbol: denom.symbol,
+              name: denom.name,
+              decimals: denom.decimals,
+              baseDenom: denom.baseDenom,
+            };
+            break;
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      // Try WASM asset metadata lookup
+      if (!metadata && wasmAsset) {
+        try {
+          const assetIdBytes = base64ToBytes(assetIdBase64);
+          // This would query the chain for metadata — simplified here
+          // In practice, fetchAssetMetadata via gRPC-web
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      balances.push({
+        assetIdHex: entry.assetIdHex,
+        amount: entry.amount,
+        accountIndex: entry.accountIndex,
+        metadata: metadata,
+      });
+    }
+
+    sendToRN({
+      type: 'balancesResult',
+      requestId: cmd.requestId,
+      balances: balances,
+    });
+  } catch (e) {
+    sendError('Failed to get balances: ' + e.message, cmd.requestId, e.stack);
+  }
+}
+
+// =============================================================================
+// Address Handlers
+// =============================================================================
+
+async function handleGetAddress(cmd) {
+  if (!wasmKeys || !fvkBytes) {
+    sendError('WASM not available or not initialized', cmd.requestId);
+    return;
+  }
+  try {
+    const { FullViewingKey } = await import('@mizufinance/protobuf/penumbra/core/keys/v1/keys_pb');
+    const { bech32mAddress } = await import('@mizufinance/bech32m/penumbra');
+    const fvk = new FullViewingKey({ inner: fvkBytes });
+    const address = await wasmKeys.getAddressByIndex(fvk, cmd.accountIndex);
+    sendToRN({
+      type: 'addressResult',
+      requestId: cmd.requestId,
+      address: bech32mAddress(address),
+      accountIndex: cmd.accountIndex,
+    });
+  } catch (e) {
+    sendError('Failed to get address: ' + e.message, cmd.requestId, e.stack);
+  }
+}
+
+async function handleGetEphemeralAddress(cmd) {
+  if (!wasmKeys || !fvkBytes) {
+    sendError('WASM not available or not initialized', cmd.requestId);
+    return;
+  }
+  try {
+    const { FullViewingKey } = await import('@mizufinance/protobuf/penumbra/core/keys/v1/keys_pb');
+    const { bech32mAddress } = await import('@mizufinance/bech32m/penumbra');
+    const fvk = new FullViewingKey({ inner: fvkBytes });
+    const address = await wasmKeys.getEphemeralByIndex(fvk, cmd.accountIndex);
+    sendToRN({
+      type: 'ephemeralAddressResult',
+      requestId: cmd.requestId,
+      address: bech32mAddress(address),
+      accountIndex: cmd.accountIndex,
+    });
+  } catch (e) {
+    sendError('Failed to get ephemeral address: ' + e.message, cmd.requestId, e.stack);
+  }
+}
+
+async function handleGetTransparentAddress(cmd) {
+  if (!wasmKeys || !fvkBytes) {
+    sendError('WASM not available or not initialized', cmd.requestId);
+    return;
+  }
+  try {
+    const { FullViewingKey } = await import('@mizufinance/protobuf/penumbra/core/keys/v1/keys_pb');
+    const fvk = new FullViewingKey({ inner: fvkBytes });
+    const result = await wasmKeys.getTransparentAddress(fvk);
+    sendToRN({
+      type: 'transparentAddressResult',
+      requestId: cmd.requestId,
+      address: result.encoding,
+    });
+  } catch (e) {
+    sendError('Failed to get transparent address: ' + e.message, cmd.requestId, e.stack);
+  }
+}
+
+// =============================================================================
+// Transaction Handlers
+// =============================================================================
+
+async function handlePlanTransaction(cmd) {
+  if (!wasmPlanner || !fvkBytes) {
+    sendError('WASM not available or not initialized', cmd.requestId);
+    return;
+  }
+  try {
+    const { FullViewingKey } = await import('@mizufinance/protobuf/penumbra/core/keys/v1/keys_pb');
+    const { TransactionPlannerRequest } = await import('@mizufinance/protobuf/penumbra/view/v1/view_pb');
+    const fvk = new FullViewingKey({ inner: fvkBytes });
+
+    const request = TransactionPlannerRequest.fromJson(JSON.parse(cmd.request));
+
+    // Get gas fee token
+    const gasPriceEntries = await idbGetAll('GAS_PRICES');
+    let gasFeeToken;
+    if (gasPriceEntries.length > 0 && gasPriceEntries[0].assetId) {
+      const { AssetId } = await import('@mizufinance/protobuf/penumbra/core/asset/v1/asset_pb');
+      gasFeeToken = AssetId.fromJson(gasPriceEntries[0].assetId);
+    } else if (wasmAsset) {
+      gasFeeToken = await wasmAsset.assetIdFromBaseDenom('upenumbra');
+    }
+
+    const idbConstants = { name: DB_NAME, version: DB_VERSION, tables: IDB_TABLES };
+    const plan = await wasmPlanner.planTransaction(idbConstants, request, fvk, gasFeeToken);
+
+    sendToRN({
+      type: 'planResult',
+      requestId: cmd.requestId,
+      success: true,
+      plan: JSON.stringify(plan.toJson()),
+    });
+  } catch (e) {
+    sendToRN({ type: 'planResult', requestId: cmd.requestId, success: false, error: e.message });
+  }
+}
+
+async function handleBuildTransaction(cmd) {
+  if (!wasmBuild || !fvkBytes || !spendKeyBytes) {
+    sendError('WASM not available or not initialized', cmd.requestId);
+    return;
+  }
+  try {
+    const { FullViewingKey, SpendKey } = await import('@mizufinance/protobuf/penumbra/core/keys/v1/keys_pb');
+    const { TransactionPlan } = await import('@mizufinance/protobuf/penumbra/core/transaction/v1/transaction_pb');
+
+    const fvk = new FullViewingKey({ inner: fvkBytes });
+    const sk = new SpendKey({ inner: spendKeyBytes });
+    const plan = TransactionPlan.fromJson(JSON.parse(cmd.plan));
+
+    // Authorize
+    const authData = await wasmBuild.authorizePlan(sk, plan);
+
+    // Get witness data
+    const sct = await loadStoredTree();
+    const witnessData = await wasmBuild.getWitness(plan, sct);
+
+    // Build actions in parallel
+    const actions = [];
+    for (let i = 0; i < plan.actions.length; i++) {
+      const action = await wasmBuild.buildActionParallel(plan, witnessData, fvk, i, { proverUrl });
+      actions.push(action);
+    }
+
+    // Assemble final transaction
+    const transaction = await wasmBuild.buildParallel(actions, plan, witnessData, authData);
+
+    const txBytes = transaction.toBinary();
+    const txId = bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', txBytes)));
+
+    sendToRN({
+      type: 'buildResult',
+      requestId: cmd.requestId,
+      success: true,
+      transaction: bytesToBase64(txBytes),
+      transactionId: txId,
+    });
+  } catch (e) {
+    sendToRN({ type: 'buildResult', requestId: cmd.requestId, success: false, error: e.message });
+  }
+}
+
+async function handleBroadcastTransaction(cmd) {
+  try {
+    const { BroadcastTxSyncRequest } = await import(
+      '@mizufinance/protobuf/penumbra/util/tendermint_proxy/v1/tendermint_proxy_pb'
+    );
+
+    const txBytes = base64ToBytes(cmd.transaction);
+    const request = new BroadcastTxSyncRequest({ params: txBytes });
+    const base64Request = createGrpcWebRequest(request.toBinary());
+
+    const response = await fetch(grpcUrl + '/penumbra.util.tendermint_proxy.v1.TendermintProxyService/BroadcastTxSync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/grpc-web-text', 'Accept': 'application/grpc-web-text' },
+      body: base64Request,
+    });
+
+    if (!response.ok) {
+      throw new Error('Broadcast failed: ' + response.status);
+    }
+
+    const responseBytes = parseGrpcWebResponse(await response.text());
+    // Parse response for hash/code
+    sendToRN({
+      type: 'broadcastResult',
+      requestId: cmd.requestId,
+      success: true,
+      hash: bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', txBytes))),
+    });
+  } catch (e) {
+    sendToRN({ type: 'broadcastResult', requestId: cmd.requestId, success: false, error: e.message });
+  }
+}
+
+// =============================================================================
+// Status Handler
+// =============================================================================
+
+function handleGetSyncStatus(cmd) {
+  getLastSyncedHeight().then(function(lastHeight) {
+    return getChainHeight().then(function(chainH) {
+      const current = Number(lastHeight);
+      sendToRN({
+        type: 'syncStatusResult',
+        requestId: cmd.requestId,
+        isRunning: isSyncing,
+        currentHeight: current,
+        targetHeight: chainH,
+        isSynced: current >= chainH,
+      });
+    });
+  }).catch(function(e) {
+    sendError('Failed to get sync status: ' + e.message, cmd.requestId, e.stack);
+  });
+}
+
+// =============================================================================
+// Clear Data Handler
+// =============================================================================
+
+async function handleClearData(cmd) {
+  try {
+    if (isSyncing) {
+      isStopping = true;
+      // Wait for sync to stop
+      await new Promise(function(r) { setTimeout(r, 500); });
+    }
+
+    const stores = [
+      'TREE_COMMITMENTS', 'TREE_HASHES', 'TREE_LAST_POSITION', 'TREE_LAST_FORGOTTEN',
+      'SPENDABLE_NOTES', 'SWAPS', 'FULL_SYNC_HEIGHT', 'FMD_PARAMETERS',
+      'APP_PARAMETERS', 'GAS_PRICES', 'EPOCHS', 'ibcDenoms',
+    ];
+    for (const store of stores) {
+      await idbClear(store);
+    }
+
+    viewServer = null;
+    isInitialized = false;
+
+    sendToRN({ type: 'clearDataResult', requestId: cmd.requestId, success: true });
+  } catch (e) {
+    sendToRN({ type: 'clearDataResult', requestId: cmd.requestId, success: false, error: e.message });
+  }
+}
+
+// =============================================================================
+// Signal ready
+// =============================================================================
+
+sendToRN({ type: 'ready' });
+console.log('[Bridge] Penumbra WebView bridge loaded');
+</script>
+</body>
+</html>

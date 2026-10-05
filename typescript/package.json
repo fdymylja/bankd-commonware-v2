@@ -7,7 +7,12 @@
     "admin:dev": "pnpm --filter bankd-admin dev",
     "admin:build": "pnpm --filter bankd-admin build",
     "admin:test": "pnpm --filter bankd-admin test:commonware",
-    "shared:typecheck": "pnpm --filter @bankd/shared typecheck"
+    "shared:typecheck": "pnpm --filter @bankd/shared typecheck",
+    "mobile:dev": "pnpm --filter bankd-mobile start",
+    "mobile:bridge": "pnpm --filter bankd-mobile build:bridge",
+    "mobile:typecheck": "pnpm --filter bankd-mobile typecheck",
+    "mobile:test": "pnpm --filter bankd-mobile test:commonware",
+    "mobile:web": "pnpm --filter bankd-mobile web"
   },
   "devDependencies": {
     "@playwright/test": "1.59.1",
