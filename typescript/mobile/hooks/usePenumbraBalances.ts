@@ -16,7 +16,6 @@ import { usePenumbraBridge } from '@/providers/PenumbraProvider'
 import { getPublicClient } from '@/lib/evm/client'
 import type { PenumbraBridgeBalance } from '@/lib/penumbra-webview'
 import { onNoteActivity } from '@/lib/penumbra-webview/usePenumbraWebView'
-import { useDemoConfig } from '../../amm_demo/mobile/data'
 
 // =============================================================================
 // Types
@@ -101,7 +100,7 @@ function useERC20Metadata(addresses: Hex[]) {
 
 function formatAmountRaw(amount: string, decimals: number): string {
   const value = BigInt(amount)
-  const divisor = BigInt(10 ** decimals)
+  const divisor = 10n ** BigInt(decimals)
   const wholePart = value / divisor
   const fractionalPart = value % divisor
   if (fractionalPart === 0n) return wholePart.toString()
@@ -129,13 +128,17 @@ function bridgeBalanceToPenumbraBalance(
   const baseDenom = b.metadata?.baseDenom || localMeta?.baseDenom || b.assetIdHex
   let symbol = 'Unknown'
   let name = 'Unknown'
-  let decimals = b.metadata?.decimals ?? localMeta?.decimals ?? 6
+  let decimals = localMeta?.decimals ?? b.metadata?.decimals ?? 18
   let erc20Address: Hex | undefined = localMeta?.erc20Address as Hex | undefined
 
   const isIBC = baseDenom.startsWith('transfer/')
   let sourceChannel: string | undefined
 
-  if (baseDenom.startsWith('erc20:')) {
+  if (baseDenom === chainConfig.denom) {
+    symbol = chainConfig.displayDenom
+    name = chainConfig.displayDenom
+    decimals = chainConfig.decimals
+  } else if (baseDenom.startsWith('erc20:')) {
     erc20Address = baseDenom.slice(6) as Hex
   } else if (!isIBC && !baseDenom.startsWith('(base64:')) {
     symbol = baseDenom.startsWith('u')
@@ -204,7 +207,6 @@ function bridgeBalanceToPenumbraBalance(
 // =============================================================================
 
 export function usePenumbraBalances() {
-  const { data: ammDemo } = useDemoConfig()
   const bridge = usePenumbraBridge()
   const queryClient = useQueryClient()
   const [assetIdLookup, setAssetIdLookup] = useState<Map<string, AssetMeta>>(new Map())
@@ -215,7 +217,7 @@ export function usePenumbraBalances() {
   useEffect(() => {
     if (!bridge.isInitialized) return
 
-    bridge.computeAssetIds([chainConfig.denom, ...(ammDemo ? [ammDemo.gold.denom] : [])])
+    bridge.computeAssetIds([chainConfig.denom])
       .then((assetIds) => {
         const lookup = new Map<string, AssetMeta>()
         const assetIdBase64 = assetIds[chainConfig.denom]
@@ -227,16 +229,10 @@ export function usePenumbraBalances() {
             baseDenom: chainConfig.denom,
           })
         }
-        if (ammDemo && assetIds[ammDemo.gold.denom]) {
-          lookup.set(assetIds[ammDemo.gold.denom], {
-            symbol: 'GOLD', name: 'Gold (demo)', decimals: ammDemo.gold.decimals,
-            baseDenom: ammDemo.gold.denom,
-          })
-        }
         setAssetIdLookup(lookup)
       })
       .catch((err) => console.warn('[usePenumbraBalances] Failed to compute native asset ID:', err))
-  }, [bridge.isInitialized, ammDemo?.genesisHash])
+  }, [bridge.isInitialized])
 
   // Refetch balances immediately when new notes arrive
   useEffect(() => {
@@ -248,7 +244,7 @@ export function usePenumbraBalances() {
 
   // Poll bridge for balances
   const query = useQuery({
-    queryKey: ['penumbra', 'balances', 'mobile', isReady],
+    queryKey: ['penumbra', 'balances', 'mobile', bridge.penumbraAddress, isReady],
     queryFn: async (): Promise<PenumbraBridgeBalance[]> => {
       return bridge.getBalances()
     },
@@ -258,7 +254,7 @@ export function usePenumbraBalances() {
   })
 
   const bridgeBalances = bridge.balances
-  const rawBalances = (query.data?.length ? query.data : bridgeBalances) ?? []
+  const rawBalances = isReady ? (query.data?.length ? query.data : bridgeBalances) ?? [] : []
 
   // Extract unique ERC20 addresses from raw balances (for on-chain metadata lookup)
   const erc20Addresses = useMemo(() => {

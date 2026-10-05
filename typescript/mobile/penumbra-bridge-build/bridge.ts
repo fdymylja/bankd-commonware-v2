@@ -15,15 +15,15 @@ import {
   getEphemeralByIndex,
   getWalletId,
   getTransparentAddress,
-} from '@mizufinance/embedded-shieldd-wasm/keys'
-import { getAddressIndexByAddress } from '@mizufinance/embedded-shieldd-wasm/address'
-import { authorizePlan, buildActionParallel, buildParallel, getWitness } from '@mizufinance/embedded-shieldd-wasm/build'
-import { assetIdFromBaseDenom } from '@mizufinance/embedded-shieldd-wasm/asset'
-import { planTransaction as wasmPlanTransaction } from '@mizufinance/embedded-shieldd-wasm/planner'
-import { ViewServer } from '@mizufinance/embedded-shieldd-wasm/view-server'
-import { prepareDisclosure, exportDisclosure, inspectDisclosure, confirmDisclosureAcceptance } from '@mizufinance/embedded-shieldd-wasm/disclosure'
+} from '@mizufinance/wasm/keys'
+import { getAddressIndexByAddress } from '@mizufinance/wasm/address'
+import { authorizePlan, buildActionParallel, buildParallel, getWitness } from '@mizufinance/wasm/build'
+import { assetIdFromBaseDenom } from '@mizufinance/wasm/asset'
+import { planTransaction as wasmPlanTransaction } from '@mizufinance/wasm/planner'
+import { ViewServer } from '@mizufinance/wasm/view-server'
+import { prepareDisclosure, exportDisclosure, inspectDisclosure, confirmDisclosureAcceptance } from '@mizufinance/wasm/disclosure'
 import { committedDisclosureTransaction, disclosureRequest } from '../../packages/shared/src/shieldd/disclosure'
-import { Any } from '@bufbuild/protobuf'
+import { createShielddFetch, rpc, getFinalizedHeight, broadcast, waitForConfirmation, assertCommittedAnchor } from './commonware'
 import {
   FullViewingKey,
   SpendKey,
@@ -50,7 +50,7 @@ import {
   AppParametersResponse,
 } from '@mizufinance/protobuf/shieldd/core/app/v1/app_pb'
 import { Amount } from '@mizufinance/protobuf/shieldd/core/num/v1/num_pb'
-import { AuthInfo, Fee, TxBody, TxRaw } from '@mizufinance/protobuf/cosmos/tx/v1beta1/tx_pb'
+
 import { addressFromBech32m, bech32mAddress } from './shieldd-address'
 
 // =============================================================================
@@ -61,12 +61,13 @@ let isInitialized = false
 let grpcUrl = ''
 let rpcUrl = ''
 let chainId = ''
-let proverUrl = 'http://localhost:8090'
+let proverUrl = 'http://127.0.0.1:8090'
 
 let fvkBytes: Uint8Array | null = null
 let spendKeyBytes: Uint8Array | null = null
 let isSyncing = false
 let isStopping = false
+let syncTargetHeight = 0
 let viewServer: any = null
 
 // =============================================================================
@@ -105,7 +106,12 @@ document.addEventListener('message', ((event: any) => {
 // Command Handler
 // =============================================================================
 
+let mutationInProgress = false
+const MUTATIONS = new Set(['init', 'send', 'withdraw', 'buildTransaction', 'broadcastTransaction', 'clearData'])
 async function handleCommand(cmd: any) {
+  const mutation = MUTATIONS.has(cmd.type)
+  if (mutation && mutationInProgress) { sendError('Another wallet operation is in progress', cmd.requestId); return }
+  if (mutation) mutationInProgress = true
   try {
     switch (cmd.type) {
       case 'deriveKeys': await handleDeriveKeys(cmd); break
@@ -130,6 +136,8 @@ async function handleCommand(cmd: any) {
     }
   } catch (e: any) {
     sendError(e.message, cmd.requestId, e.stack)
+  } finally {
+    if (mutation) mutationInProgress = false
   }
 }
 
@@ -147,7 +155,7 @@ async function handleDisclosureExport(cmd: import('../lib/penumbra-webview/bridg
 // IndexedDB Setup
 // =============================================================================
 
-const DB_NAME = 'shieldd-native-wallet'
+let DB_NAME = 'bankd-commonware-wallet'
 const DB_VERSION = 2
 const IDB_TABLES = {
   assets: 'ASSETS',
@@ -292,91 +300,11 @@ function hexToBytes(hex: string, expectedLength?: number): Uint8Array {
   return bytes
 }
 
-function encodeVarint(value: number): Uint8Array {
-  const bytes: number[] = []
-  let remaining = value
-  while (remaining >= 0x80) {
-    bytes.push((remaining & 0x7f) | 0x80)
-    remaining = Math.floor(remaining / 0x80)
-  }
-  bytes.push(remaining)
-  return new Uint8Array(bytes)
-}
-
-function concatBytes(...parts: Uint8Array[]): Uint8Array {
-  const result = new Uint8Array(parts.reduce((length, part) => length + part.length, 0))
-  let offset = 0
-  for (const part of parts) {
-    result.set(part, offset)
-    offset += part.length
-  }
-  return result
-}
-
-function wrapShielddTransaction(transaction: Uint8Array): Uint8Array {
-  const deliverTx = concatBytes(
-    new Uint8Array([0x0a]),
-    encodeVarint(transaction.length),
-    transaction,
-  )
-  const body = new TxBody({
-    messages: [
-      new Any({
-        typeUrl: '/mizufinance.shieldd.v1.MsgDeliverTx',
-        value: deliverTx,
-      }),
-    ],
-    extensionOptions: [
-      new Any({
-        typeUrl: '/mizufinance.shieldd.v1.ExtensionOptionsShielddTx',
-        value: new Uint8Array(),
-      }),
-    ],
-  })
-  return new TxRaw({
-    bodyBytes: body.toBinary(),
-    authInfoBytes: new AuthInfo({ fee: new Fee({}) }).toBinary(),
-    signatures: [],
-  }).toBinary()
-}
-
-const BANKD_QUERY_PATH = '/mizufinance.shieldd.v1.Query/'
-const SHIELDD_QUERY_REWRITES: Record<string, string> = {
-  '/shieldd.core.app.v1.QueryService/AppParameters': BANKD_QUERY_PATH + 'AppParameters',
-  '/shieldd.core.component.shielded_pool.v1.QueryService/AssetMetadataById': BANKD_QUERY_PATH + 'AssetMetadataById',
-  '/shieldd.core.component.compliance.v1.QueryService/ComplianceAssetStatus': BANKD_QUERY_PATH + 'ComplianceAssetStatus',
-  '/shieldd.core.component.compliance.v1.QueryService/ComplianceBatchMerkleProofs': BANKD_QUERY_PATH + 'ComplianceBatchMerkleProofs',
-  '/shieldd.core.component.compliance.v1.QueryService/ComplianceUserLeaf': BANKD_QUERY_PATH + 'ComplianceUserLeaf',
-  '/shieldd.cnidarium.v1.QueryService/KeyValue': BANKD_QUERY_PATH + 'KeyValue',
-  '/shieldd.core.component.sct.v1.QueryService/NullifierWindow': BANKD_QUERY_PATH + 'NullifierWindow',
-  '/shieldd.core.component.compact_block.v1.QueryService/CompactBlockRange': BANKD_QUERY_PATH + 'CompactBlockRange',
-}
-
+const BANKD_QUERY_PATH = '/query/'
 let bankdQueryProxyInstalled = false
-
 function installBankdQueryProxy() {
   if (bankdQueryProxyInstalled) return
-  const nativeFetch = globalThis.fetch.bind(globalThis)
-
-  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-    const rawUrl = typeof input === 'string'
-      ? input
-      : input instanceof URL
-        ? input.toString()
-        : input.url
-    let rewrittenUrl = rawUrl
-    for (const [legacyPath, bankdPath] of Object.entries(SHIELDD_QUERY_REWRITES)) {
-      if (rewrittenUrl.includes(legacyPath)) {
-        rewrittenUrl = rewrittenUrl.replace(legacyPath, bankdPath)
-        break
-      }
-    }
-
-    if (typeof input === 'string' || input instanceof URL) {
-      return nativeFetch(rewrittenUrl, init)
-    }
-    return nativeFetch(new Request(rewrittenUrl, input), init)
-  }) as typeof globalThis.fetch
+  globalThis.fetch = createShielddFetch(() => rpcUrl, globalThis.fetch.bind(globalThis))
   bankdQueryProxyInstalled = true
 }
 
@@ -459,12 +387,22 @@ async function handleDeriveKeys(cmd: any) {
 async function handleInit(cmd: any) {
   try {
     grpcUrl = cmd.grpcUrl
-    rpcUrl = cmd.rpcUrl || grpcUrl.replace(':8080', ':26657')
+    rpcUrl = cmd.rpcUrl || cmd.grpcUrl
     chainId = cmd.chainId
     proverUrl = cmd.proverUrl || proverUrl
     installBankdQueryProxy()
     fvkBytes = base64ToBytes(cmd.fvk)
     spendKeyBytes = cmd.spendKey ? base64ToBytes(cmd.spendKey) : null
+    const evmChainId = Number(BigInt(await rpc<string>(rpcUrl, 'eth_chainId')))
+    if (chainId !== `bankd-${evmChainId}`) throw new Error('Wallet chain ID does not match the Commonware node')
+    const genesis = await rpc<{ hash: string } | null>(rpcUrl, 'eth_getBlockByNumber', ['0x0', false])
+    if (!genesis?.hash) throw new Error('Cannot identify the Commonware network')
+    const walletId = await getWalletId(new FullViewingKey({ inner: fvkBytes }))
+    DB_NAME = `bankd-commonware:${chainId}:${bytesToHex(walletId.inner)}:${new URL(rpcUrl).host}:${genesis.hash}`
+    db?.close()
+    db = null
+    viewServer = null
+    syncTargetHeight = 0
     await getDB()
     isInitialized = true
 
@@ -509,25 +447,13 @@ async function loadStoredTree() {
 const blockTimestampCache = new Map<number, string>()
 
 async function getBlockTimestamp(height: number): Promise<string> {
-  if (height <= 0) return new Date().toISOString()
   const cached = blockTimestampCache.get(height)
   if (cached) return cached
-
-  try {
-    const resp = await fetch(`${rpcUrl}/block?height=${height}`)
-    if (resp.ok) {
-      const data = await resp.json()
-      const time = data.result?.block?.header?.time
-      if (time) {
-        blockTimestampCache.set(height, time)
-        return time
-      }
-    }
-  } catch { /* ignore */ }
-
-  // Fallback: estimate from current time assuming ~2s blocks
-  const now = new Date()
-  return now.toISOString()
+  const block = await rpc<{ timestamp: string } | null>(rpcUrl, 'eth_getBlockByNumber', ['0x' + height.toString(16), false])
+  if (!block) return new Date().toISOString()
+  const time = new Date(Number(BigInt(block.timestamp)) * 1000).toISOString()
+  blockTimestampCache.set(height, time)
+  return time
 }
 
 /** Save scan result to IDB. Returns activity entries for new/spent notes. */
@@ -678,7 +604,7 @@ async function fetchAndSaveAppParameters() {
 
       // If assetId is missing, derive Bankd's native Shieldd asset ID.
       if (!gasPrices.assetId?.inner) {
-        const stakingAssetId = await assetIdFromBaseDenom('ubrl')
+        const stakingAssetId = await assetIdFromBaseDenom('abrl')
         gasPrices.assetId = new AssetId({ inner: stakingAssetId.inner })
       }
 
@@ -695,8 +621,8 @@ async function fetchAndSaveAppParameters() {
 // Compact block fetching
 // =============================================================================
 
-const RANGE_BATCH_SIZE = 10000
-const FLUSH_INTERVAL = 5000
+const RANGE_BATCH_SIZE = 256
+const FLUSH_INTERVAL = 128
 
 async function fetchCompactBlockRange(startHeight: number, endHeight: number) {
   const request = new CompactBlockRangeRequest({
@@ -718,16 +644,7 @@ async function fetchCompactBlockRange(startHeight: number, endHeight: number) {
 }
 
 async function getChainHeight(): Promise<number> {
-  try {
-    // Use the Penumbra gRPC endpoint to get status
-    const response = await fetch(rpcUrl + '/status')
-    if (!response.ok) return 0
-    const data = await response.json()
-    const height = data.result?.sync_info?.latest_block_height || data.syncInfo?.latestBlockHeight || 0
-    return typeof height === 'string' ? parseInt(height, 10) : height
-  } catch {
-    return 0
-  }
+  return getFinalizedHeight(rpcUrl)
 }
 
 // =============================================================================
@@ -758,6 +675,7 @@ async function handleStartSync(cmd: any) {
     const lastHeight = await getLastSyncedHeight()
     let currentHeight = lastHeight === 0n ? -1 : Number(lastHeight)
     let chainHeight = await getChainHeight()
+    syncTargetHeight = chainHeight
 
     console.log('[Bridge] Starting sync from height', currentHeight, 'to chain height', chainHeight, 'grpcUrl:', grpcUrl)
 
@@ -817,7 +735,6 @@ async function handleStartSync(cmd: any) {
       }
 
       sendToRN({ type: 'syncProgress', currentHeight, targetHeight: chainHeight, isSynced: currentHeight >= chainHeight })
-      chainHeight = await getChainHeight()
     }
 
     // Watch for new blocks
@@ -826,10 +743,11 @@ async function handleStartSync(cmd: any) {
       while (!isStopping) {
         await new Promise(r => setTimeout(r, 2000))
         const newHeight = await getChainHeight()
-        if (newHeight > chainHeight) {
+        if (newHeight > currentHeight) {
           chainHeight = newHeight
+          syncTargetHeight = chainHeight
           try {
-            const blocks = await fetchCompactBlockRange(currentHeight + 1, chainHeight)
+            const blocks = await fetchCompactBlockRange(currentHeight + 1, Math.min(currentHeight + RANGE_BATCH_SIZE, chainHeight))
             for (const block of blocks) {
               if (isStopping) break
               await viewServer.scanBlock(block, false)
@@ -840,7 +758,7 @@ async function handleStartSync(cmd: any) {
             if (act.length > 0) {
               sendToRN({ type: 'notesFound', count: result.newNotes.length, height: currentHeight, activity: act })
             }
-            sendToRN({ type: 'syncProgress', currentHeight, targetHeight: chainHeight, isSynced: true })
+            sendToRN({ type: 'syncProgress', currentHeight, targetHeight: chainHeight, isSynced: currentHeight >= chainHeight })
           } catch { /* retry next loop */ }
         }
       }
@@ -911,7 +829,7 @@ async function handleGetBalances(cmd: any) {
                 metadata = {
                   symbol: m.symbol || m.display || m.base || 'Unknown',
                   name: m.name || m.symbol || 'Unknown',
-                  decimals: displayUnit?.exponent ?? 6,
+                  decimals: displayUnit?.exponent ?? 18,
                   baseDenom: m.base || '',
                 }
               }
@@ -995,7 +913,7 @@ async function handlePlanTx(cmd: any) {
     if (gasPriceEntries.length > 0 && gasPriceEntries[0].assetId) {
       gasFeeToken = AssetId.fromJson(gasPriceEntries[0].assetId)
     } else {
-      gasFeeToken = await assetIdFromBaseDenom('ubrl')
+      gasFeeToken = await assetIdFromBaseDenom('abrl')
     }
 
     const idbConstants = { name: DB_NAME, version: DB_VERSION, tables: IDB_TABLES }
@@ -1016,6 +934,7 @@ async function handleBuildTx(cmd: any) {
     const authData = await authorizePlan(sk, plan)
     const sct = await loadStoredTree()
     const witnessData = await getWitness(plan, sct as any)
+    await assertCommittedAnchor(rpcUrl, witnessData.anchor?.inner)
 
     const actions = []
     for (let i = 0; i < plan.actions.length; i++) {
@@ -1024,7 +943,7 @@ async function handleBuildTx(cmd: any) {
 
     const transaction = await buildParallel(actions, plan, witnessData, authData)
     const txBytes = transaction.toBinary()
-    const txId = bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', txBytes)))
+    const txId = bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(txBytes))))
 
     sendToRN({ type: 'buildResult', requestId: cmd.requestId, success: true, transaction: bytesToBase64(txBytes), transactionId: txId })
   } catch (e: any) {
@@ -1036,24 +955,25 @@ async function handleBroadcastTx(cmd: any) {
   try {
     const shielddTxBytes = base64ToBytes(cmd.transaction)
     const hash = await broadcastShielddTransaction(shielddTxBytes)
+    const height = await waitForConfirmation(rpcUrl, hash)
+    if (isSyncing) await waitForWalletHeight(height)
     sendToRN({ type: 'broadcastResult', requestId: cmd.requestId, success: true, hash })
   } catch (e: any) {
     sendToRN({ type: 'broadcastResult', requestId: cmd.requestId, success: false, error: e.message })
   }
 }
 
-async function broadcastShielddTransaction(shielddTxBytes: Uint8Array): Promise<string> {
-  const bankdTxBytes = wrapShielddTransaction(shielddTxBytes)
-  const response = await fetch(`${rpcUrl}/broadcast_tx_sync?tx=${bytesToHex(bankdTxBytes)}`)
-  if (!response.ok) throw new Error('Broadcast failed: ' + response.status)
-  const data = await response.json()
-  if (data.error) {
-    throw new Error(`Broadcast failed: ${data.error.message ?? JSON.stringify(data.error)}`)
+async function broadcastShielddTransaction(shielddTxBytes: Uint8Array): Promise<`0x${string}`> {
+  return broadcast(rpcUrl, shielddTxBytes)
+}
+
+async function waitForWalletHeight(height: number): Promise<void> {
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    if (await getLastSyncedHeight() >= BigInt(height)) return
+    await new Promise(resolve => setTimeout(resolve, 250))
   }
-  if (Number(data.result?.code ?? 0) !== 0) {
-    throw new Error(`Broadcast rejected: ${data.result?.log || 'code ' + data.result.code}`)
-  }
-  return data.result?.hash || ''
+  throw new Error('Transaction confirmed, but wallet sync is still pending; wait before sending again')
 }
 
 // =============================================================================
@@ -1061,13 +981,17 @@ async function broadcastShielddTransaction(shielddTxBytes: Uint8Array): Promise<
 // =============================================================================
 
 async function handleWithdraw(cmd: any) {
+  let txHash: `0x${string}` | undefined
   if (!fvkBytes || !spendKeyBytes) { sendError('Not initialized with spend key', cmd.requestId); return }
 
   try {
+    if (!isSyncing) throw new Error('Start wallet sync before sending')
+    await waitForWalletHeight(await getFinalizedHeight(rpcUrl))
     const fvk = new FullViewingKey({ inner: fvkBytes })
     const sk = new SpendKey({ inner: spendKeyBytes })
 
     // Callers pass amount in base units (e.g. "1500000" for 1.5 tokens).
+    if (cmd.denom !== 'abrl') throw new Error('Only native BRL can be withdrawn on this Commonware base')
     const amountBigint = BigInt(cmd.amount)
     if (amountBigint <= 0n) throw new Error('Invalid amount')
     const lo = amountBigint & ((1n << 64n) - 1n)
@@ -1097,7 +1021,7 @@ async function handleWithdraw(cmd: any) {
       if (!cmd.destinationAddress) throw new Error('Host transfer requires a destination address')
       destination = {
         case: 'transfer',
-        value: new HostTransfer({ recipient: cmd.destinationAddress }),
+        value: new HostTransfer({ recipient: /^0x[0-9a-fA-F]{40}$/.test(cmd.destinationAddress) ? cmd.destinationAddress : (() => { throw new Error('Host withdrawal requires an EVM recipient') })() }),
       }
     }
 
@@ -1119,7 +1043,7 @@ async function handleWithdraw(cmd: any) {
     if (gasPriceEntries.length > 0 && gasPriceEntries[0].assetId) {
       gasFeeToken = AssetId.fromJson(gasPriceEntries[0].assetId)
     } else {
-      gasFeeToken = await assetIdFromBaseDenom('ubrl')
+      gasFeeToken = await assetIdFromBaseDenom('abrl')
     }
     const idbConstants = { name: DB_NAME, version: DB_VERSION, tables: IDB_TABLES }
     const plan = await wasmPlanTransaction(idbConstants, plannerRequest, fvk, gasFeeToken, grpcUrl)
@@ -1132,6 +1056,7 @@ async function handleWithdraw(cmd: any) {
     emitProgress(cmd.requestId, 'building', 'Building ZK proofs…')
     const sct = await loadStoredTree()
     const witnessData = await getWitness(plan, sct as any)
+    await assertCommittedAnchor(rpcUrl, witnessData.anchor?.inner)
 
     const actions = []
     for (let i = 0; i < plan.actions.length; i++) {
@@ -1140,57 +1065,19 @@ async function handleWithdraw(cmd: any) {
     const transaction = await buildParallel(actions, plan, witnessData, authData)
     const txBytes = transaction.toBinary()
 
-    // 4. Wrap as a Bankd Shieldd tx and broadcast via CometBFT RPC.
+    // Submit the native EIP-2718 Shieldd envelope through the EVM RPC.
     emitProgress(cmd.requestId, 'broadcasting', 'Broadcasting…')
-    const txHash = await broadcastShielddTransaction(txBytes)
+    txHash = await broadcastShielddTransaction(txBytes)
 
-    // 6. Poll for confirmation
-    emitProgress(cmd.requestId, 'confirming', 'Waiting for confirmation…')
-    let confirmed = false
-    const pollStart = Date.now()
-    while (Date.now() - pollStart < 60000) {
-      await new Promise(r => setTimeout(r, 2000))
-      try {
-        const txResp = await fetch(`${rpcUrl}/tx?hash=0x${txHash}`)
-        if (!txResp.ok) continue
-        const txData = await txResp.json()
-        if (txData.result?.tx_result) {
-          if (txData.result.tx_result.code === 0) {
-            confirmed = true
-            console.log('[HostWithdrawal] Confirmed at height', txData.result.height)
-            break
-          } else {
-            throw new Error(`TX failed: ${txData.result.tx_result.log}`)
-          }
-        }
-      } catch (e: any) {
-        if (e.message.startsWith('TX failed:')) throw e
-      }
-    }
-
-    if (!confirmed) {
-      sendToRN({ type: 'withdrawResult', requestId: cmd.requestId, success: false, txHash, error: 'Confirmation timeout' })
-      return
-    }
-
-    // Wait for background sync to catch up (prevents "nullifier already spent" on next tx)
+    emitProgress(cmd.requestId, 'confirming', 'Waiting for finality…')
+    const height = await waitForConfirmation(rpcUrl, txHash)
     emitProgress(cmd.requestId, 'syncing', 'Syncing wallet…')
-    try {
-      const targetHeight = await getChainHeight()
-      const waitStart = Date.now()
-      while (Date.now() - waitStart < 15000) {
-        const synced = await getLastSyncedHeight()
-        if (synced >= BigInt(targetHeight)) break
-        await new Promise(r => setTimeout(r, 500))
-      }
-    } catch (e: any) {
-      // non-fatal
-    }
+    await waitForWalletHeight(height)
 
     sendToRN({ type: 'withdrawResult', requestId: cmd.requestId, success: true, txHash })
   } catch (e: any) {
     console.error('[HostWithdrawal] Failed:', e)
-    sendToRN({ type: 'withdrawResult', requestId: cmd.requestId, success: false, error: e.message })
+    sendToRN({ type: 'withdrawResult', requestId: cmd.requestId, success: false, error: e.message, txHash })
   }
 }
 
@@ -1203,9 +1090,12 @@ function emitProgress(requestId: string, step: string, message: string) {
 }
 
 async function handleSend(cmd: any) {
+  let txHash: `0x${string}` | undefined
   if (!fvkBytes || !spendKeyBytes) { sendError('Not initialized with spend key', cmd.requestId); return }
 
   try {
+    if (!isSyncing) throw new Error('Start wallet sync before sending')
+    await waitForWalletHeight(await getFinalizedHeight(rpcUrl))
     const fvk = new FullViewingKey({ inner: fvkBytes })
     const sk = new SpendKey({ inner: spendKeyBytes })
 
@@ -1260,7 +1150,7 @@ async function handleSend(cmd: any) {
     if (gasPriceEntries.length > 0 && gasPriceEntries[0].assetId) {
       gasFeeToken = AssetId.fromJson(gasPriceEntries[0].assetId)
     } else {
-      gasFeeToken = await assetIdFromBaseDenom('ubrl')
+      gasFeeToken = await assetIdFromBaseDenom('abrl')
     }
     const idbConstants = { name: DB_NAME, version: DB_VERSION, tables: IDB_TABLES }
     emitProgress(cmd.requestId, 'planning', 'Planning transaction…')
@@ -1274,6 +1164,7 @@ async function handleSend(cmd: any) {
     emitProgress(cmd.requestId, 'building', 'Building ZK proofs…')
     const sct = await loadStoredTree()
     const witnessData = await getWitness(plan, sct as any)
+    await assertCommittedAnchor(rpcUrl, witnessData.anchor?.inner)
 
     const actions = []
     for (let i = 0; i < plan.actions.length; i++) {
@@ -1284,55 +1175,17 @@ async function handleSend(cmd: any) {
 
     // 5. Wrap as a Bankd Shieldd tx and broadcast.
     emitProgress(cmd.requestId, 'broadcasting', 'Broadcasting…')
-    const txHash = await broadcastShielddTransaction(txBytes)
+    txHash = await broadcastShielddTransaction(txBytes)
 
-    // 6. Poll for confirmation
-    emitProgress(cmd.requestId, 'confirming', 'Waiting for confirmation…')
-    let confirmed = false
-    const pollStart = Date.now()
-    while (Date.now() - pollStart < 60000) {
-      await new Promise(r => setTimeout(r, 2000))
-      try {
-        const txResp = await fetch(`${rpcUrl}/tx?hash=0x${txHash}`)
-        if (!txResp.ok) continue
-        const txData = await txResp.json()
-        if (txData.result?.tx_result) {
-          if (txData.result.tx_result.code === 0) {
-            confirmed = true
-            console.log('[Send] Confirmed at height', txData.result.height)
-            break
-          } else {
-            throw new Error(`TX failed: ${txData.result.tx_result.log}`)
-          }
-        }
-      } catch (e: any) {
-        if (e.message.startsWith('TX failed:')) throw e
-      }
-    }
-
-    if (!confirmed) {
-      sendToRN({ type: 'sendResult', requestId: cmd.requestId, success: false, error: 'Confirmation timeout' })
-      return
-    }
-
-    // Wait for sync to catch up
+    emitProgress(cmd.requestId, 'confirming', 'Waiting for finality…')
+    const height = await waitForConfirmation(rpcUrl, txHash)
     emitProgress(cmd.requestId, 'syncing', 'Syncing wallet…')
-    try {
-      const targetHeight = await getChainHeight()
-      const waitStart = Date.now()
-      while (Date.now() - waitStart < 15000) {
-        const synced = await getLastSyncedHeight()
-        if (synced >= BigInt(targetHeight)) break
-        await new Promise(r => setTimeout(r, 500))
-      }
-    } catch (e: any) {
-      // non-fatal
-    }
+    await waitForWalletHeight(height)
 
     sendToRN({ type: 'sendResult', requestId: cmd.requestId, success: true, txHash })
   } catch (e: any) {
     console.error('[Send] Failed:', e)
-    sendToRN({ type: 'sendResult', requestId: cmd.requestId, success: false, error: e.message })
+    sendToRN({ type: 'sendResult', requestId: cmd.requestId, success: false, error: e.message, txHash })
   }
 }
 
@@ -1342,10 +1195,10 @@ async function handleSend(cmd: any) {
 
 function handleGetSyncStatus(cmd: any) {
   getLastSyncedHeight().then(async (lastHeight) => {
-    const chainH = await getChainHeight()
+    const chainH = syncTargetHeight
     sendToRN({
       type: 'syncStatusResult', requestId: cmd.requestId,
-      isRunning: isSyncing, currentHeight: Number(lastHeight), targetHeight: chainH, isSynced: Number(lastHeight) >= chainH,
+      isRunning: isSyncing, currentHeight: Number(lastHeight), targetHeight: chainH, isSynced: isInitialized && chainH > 0 && Number(lastHeight) >= chainH,
     })
   }).catch((e: any) => sendError('Failed to get sync status: ' + e.message, cmd.requestId, e.stack))
 }

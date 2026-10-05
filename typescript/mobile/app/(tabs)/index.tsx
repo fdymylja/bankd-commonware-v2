@@ -19,28 +19,15 @@ import {
 import { colors, fontSize, fontWeight, spacing, borderRadius } from '@/lib/theme'
 import { useWallet, useBalances, usePenumbraBalances } from '@/hooks'
 import { useTransactionHistory } from '@/hooks/useTransactionHistory'
-import { useGlobalTransfer } from '@/providers/TransferProvider'
 import { usePenumbraBridge } from '@/providers/PenumbraProvider'
-import { formatAmount } from '@bankd/shared'
-import { MOCK_ERC20_ABI, MOCK_ERC20_BYTECODE } from '@bankd/shared/evm/mockERC20'
-import { MsgRegisterERC20 } from '@bankd/shared/proto/cosmos/evm/erc20/v1/tx'
 import { useQueryClient } from '@tanstack/react-query'
-import { getAddress } from 'viem'
-import { executeTx } from '@/lib/evm/execute'
-import { getEVMAccount } from '@/lib/native-wallet/evm-keys'
+import { ShieldBalance } from '@/components/balance/ShieldBalance'
+import { formatAmount } from '@bankd/shared'
 import type { SyncProgress } from '@/lib/penumbra-webview/usePenumbraWebView'
-import { useAmmPool } from '../../../amm_demo/mobile/data'
 
 // ---------------------------------------------------------------------------
-// Conversion rates to BRL (demo/hardcoded for now)
+// Native BRL is the only asset with a BRL valuation on this base.
 // ---------------------------------------------------------------------------
-const BRL_RATES: Record<string, number> = {
-  BRL: 1,
-  USD: 5.27,
-  EUR: 6.0,
-  GBP: 6.98,
-}
-
 function formatNoteAmount(amount: string, decimals: number): string {
   const raw = BigInt(amount)
   const divisor = 10n ** BigInt(decimals)
@@ -48,7 +35,7 @@ function formatNoteAmount(amount: string, decimals: number): string {
   const frac = raw % divisor
   const fracStr = frac.toString().padStart(decimals, '0').replace(/0+$/, '')
   if (!fracStr) return whole.toString()
-  return `${whole}.${fracStr.slice(0, 2)}`
+  return `${whole}.${fracStr}`
 }
 
 function formatTime(isoString: string): string {
@@ -151,16 +138,11 @@ const syncStyles = StyleSheet.create({
 // ---------------------------------------------------------------------------
 
 export default function HomeScreen() {
-  const ammPool = useAmmPool()
-  const goldPrice = ammPool.ready ? ammPool.data?.price : undefined
-  const assetRate = useCallback((balance: { baseDenom: string; symbol: string }) =>
-    ammPool.config && balance.baseDenom === ammPool.config.gold.denom
-      ? goldPrice : BRL_RATES[balance.symbol], [goldPrice, ammPool.config])
   const queryClient = useQueryClient()
+  const assetRate = useCallback((balance: { baseDenom: string }) => balance.baseDenom === 'abrl' ? 1 : undefined, [])
   const { bech32Address } = useWallet()
 
   const bridge = usePenumbraBridge()
-  const [isCreatingToken, setIsCreatingToken] = useState(false)
   const { refetch: refetchPublic } = useBalances(bech32Address ?? null)
   const { data: privateBalances, refetch: refetchPrivate, assetIdLookup } = usePenumbraBalances()
   const { history } = useTransactionHistory()
@@ -183,7 +165,7 @@ export default function HomeScreen() {
       // Try balance metadata first, then SHA256-computed assetId lookup
       const meta = metaByAssetId.get(tx.assetId) ?? assetIdLookup.get(tx.assetId)
       const symbol = meta?.symbol ?? '???'
-      const decimals = meta?.decimals ?? tx.decimals ?? 6
+      const decimals = meta?.decimals ?? tx.decimals ?? 18
       const action = tx.type === 'received' ? 'Received' : 'Sent'
       const formatted = tx.rawAmount
         ? formatNoteAmount(tx.rawAmount, decimals)
@@ -241,9 +223,6 @@ export default function HomeScreen() {
 
   // Total balance in BRL: sum all tokens with known conversion rates
   const totalFormatted = useMemo(() => {
-    if (ammPool.config && !goldPrice && privateBalances?.some(
-      balance => balance.baseDenom === ammPool.config!.gold.denom && BigInt(balance.amount) > 0n,
-    )) return '—'
     let total = 0
     for (const b of privateBalances ?? []) {
       const amount = parseFloat(b.amountFormatted)
@@ -255,95 +234,9 @@ export default function HomeScreen() {
       // Tokens without a known rate are shown in the list but don't count toward total
     }
     return formatAmount(total.toFixed(2))
-  }, [privateBalances, assetRate, goldPrice, ammPool.config])
+  }, [privateBalances, assetRate])
 
   const router = useRouter()
-  const { shield } = useGlobalTransfer()
-
-  const handleCreateToken = useCallback(() => {
-    Alert.prompt(
-      'Create Token',
-      'Enter token symbol (e.g. USD, EUR):',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Create',
-          onPress: async (symbol?: string) => {
-            if (!symbol?.trim()) return
-            const sym = symbol.trim().toUpperCase()
-
-            Alert.prompt(
-              'Token Decimals',
-              `Decimals for ${sym} (default 6):`,
-              [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Deploy',
-                  onPress: async (decStr?: string) => {
-                    const decimals = parseInt(decStr || '6', 10) || 6
-                    if (!bech32Address) {
-                      Alert.alert('Error', 'Wallet not connected')
-                      return
-                    }
-                    setIsCreatingToken(true)
-                    try {
-                      const account = getEVMAccount()
-                      const [deployResult] = await executeTx(account, queryClient, [
-                        {
-                          abi: MOCK_ERC20_ABI,
-                          bytecode: MOCK_ERC20_BYTECODE as `0x${string}`,
-                          args: [sym, sym, decimals],
-                          successMessage: 'Token deployed',
-                        },
-                      ])
-
-                      if (!('contractAddress' in deployResult) || !deployResult.contractAddress) {
-                        throw new Error('Deploy failed: no contract address')
-                      }
-
-                      const contractAddress = getAddress(deployResult.contractAddress)
-
-                      await executeTx(account, queryClient, [
-                        {
-                          msg: MsgRegisterERC20,
-                          values: {
-                            signer: bech32Address,
-                            erc20addresses: [contractAddress],
-                          },
-                          successMessage: 'Token registered',
-                        },
-                      ])
-
-                      const shieldDenom = `erc20:${contractAddress}`
-                      const shieldSuccess = await shield({
-                        amount: '1000000',
-                        denom: shieldDenom,
-                        decimals,
-                        symbol: sym,
-                      })
-
-                      refetchPublic()
-                    } catch (error) {
-                      Alert.alert('Failed', error instanceof Error ? error.message : 'Unknown error')
-                    } finally {
-                      setIsCreatingToken(false)
-                    }
-                  },
-                },
-              ],
-              'plain-text',
-              '6',
-              'number-pad'
-            )
-          },
-        },
-      ],
-      'plain-text',
-      '',
-      'default'
-    )
-  }, [bech32Address, queryClient, refetchPublic, shield])
-
   const handleAction = useCallback((action: QuickActionName) => {
     switch (action) {
       case 'send':
@@ -355,11 +248,8 @@ export default function HomeScreen() {
       case 'shieldd-demo':
         router.push('/(tabs)/swap' as any)
         break
-      case 'create-token':
-        handleCreateToken()
-        break
     }
-  }, [router, handleCreateToken])
+  }, [router])
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -371,7 +261,6 @@ export default function HomeScreen() {
         }
       >
         <TotalBalance amount={totalFormatted} />
-        {!!ammPool.config && <Text style={{ paddingHorizontal: 24, paddingBottom: 12, color: '#737780', fontSize: 11 }}>Gold valued at the Uniswap pool price, before fees and price impact.</Text>}
 
         <SyncBanner
           isReady={bridge.isReady}
@@ -380,6 +269,8 @@ export default function HomeScreen() {
           progress={bridge.syncProgress}
           lastError={bridge.lastError}
         />
+
+        <ShieldBalance />
 
         {/* Token Balances */}
         <View style={styles.balancesSection}>

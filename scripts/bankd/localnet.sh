@@ -10,6 +10,8 @@
 #
 # IBC contracts are predeployed at genesis (see scripts/bankd/connect.sh to link two chains):
 #   IBC_MODE=hub|spoke|none   adapter mode (default hub), none skips the predeploy
+#   BANKD_RPC_ADDR=127.0.0.1  HTTP RPC bind address (use LAN access for physical devices)
+#   BANKD_RPC_CORS=origins   comma-separated origins for WebView/Expo development
 #   IBC_RELAYERS=0xA,0xB      granted RELAYER_ROLE on the router
 #   IBC_HUB_CLIENTS=bankd-hub spoke only: client ids the adapter trusts as the hub
 set -euo pipefail
@@ -106,6 +108,10 @@ launch() {
   local trusted_csv
   trusted_csv="$(IFS=,; echo "${trusted[*]}")"
 
+  # Native WebViews and the Expo preview read the wallet RPC directly.
+  local rpc_cors=()
+  [[ -n "${BANKD_RPC_CORS:-}" ]] && rpc_cors=(--http.corsdomain "$BANKD_RPC_CORS")
+
   for ((i = 0; i < VALIDATORS; i++)); do
     local addr="${peers[$i]}"
     local port="${addr##*:}"
@@ -114,7 +120,7 @@ launch() {
     "$TEMPO_BIN" node \
       --chain "$DIR/genesis.json" \
       --datadir "$node_dir" \
-      --http --http.addr 127.0.0.1 --http.port "$rpc" --http.api all \
+      --http --http.addr "${BANKD_RPC_ADDR:-127.0.0.1}" --http.port "$rpc" --http.api all ${rpc_cors[@]+"${rpc_cors[@]}"} \
       --ws --ws.addr 127.0.0.1 --ws.port "$rpc" --ws.api all \
       --ipcdisable \
       --consensus.signing-key "$node_dir/signing.key" \

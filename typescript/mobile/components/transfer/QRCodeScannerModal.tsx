@@ -35,7 +35,7 @@ export function QRCodeScannerModal({
 
       const address = parseScannedPenumbraAddress(data)
       if (!address) {
-        setError('QR code does not contain a valid Penumbra address.')
+        setError('QR code does not contain a valid Shieldd address.')
         setTimeout(() => setIsProcessing(false), 1200)
         return
       }
@@ -85,7 +85,7 @@ export function QRCodeScannerModal({
               <View style={styles.scanFrame} />
             </View>
             <View style={styles.instructionsCard}>
-              <Text style={styles.instructions}>Point your camera at a Penumbra deposit address QR code.</Text>
+              <Text style={styles.instructions}>Point your camera at a Shieldd deposit address QR code.</Text>
               {error && <Text style={styles.error}>{error}</Text>}
             </View>
           </View>

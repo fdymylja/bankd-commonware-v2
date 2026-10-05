@@ -1,11 +1,19 @@
 import { strict as assert } from 'node:assert'
-
+import { test } from 'node:test'
+import { bech32m } from 'bech32'
 import { parseScannedPenumbraAddress } from './penumbra-address'
+const address = bech32m.encode('shieldd', bech32m.toWords(new Uint8Array(48).fill(7)), 1023)
 
-const validAddress =
-  'penumbra1cz9sarazkjd685533cvg57y29yc3xu9y83xe69n5spqfkvqj2fpny9hlp5x6g5kl9k28mrrx4af3hnej33w48zj07nt3kj97jy4q3jm2jekpq0u7gund5lhcds8lp9tggfcg72'
-
-assert.equal(parseScannedPenumbraAddress(validAddress), validAddress)
-assert.equal(parseScannedPenumbraAddress(`  ${validAddress}\n`), validAddress)
-assert.equal(parseScannedPenumbraAddress('wallet1deadbeef'), null)
-assert.equal(parseScannedPenumbraAddress('penumbra:' + validAddress), null)
+test('private QR parsing accepts a checksummed 48-byte Shieldd address', () => {
+  assert.equal(parseScannedPenumbraAddress(address), address)
+  assert.equal(parseScannedPenumbraAddress(`  ${address}\n`), address)
+})
+test('QR parsing rejects tampered checksums and wrong address lengths', () => {
+  assert.equal(parseScannedPenumbraAddress(address.slice(0, -1) + (address.endsWith('q') ? 'p' : 'q')), null)
+  assert.equal(parseScannedPenumbraAddress(bech32m.encode('shieldd', bech32m.toWords(new Uint8Array(32)), 1023)), null)
+})
+test('public addresses, legacy Penumbra prefixes and URI payloads are rejected', () => {
+  for (const input of ['wallet1deadbeef', '0x' + '11'.repeat(20), `shieldd:${address}`, bech32m.encode('penumbra', bech32m.toWords(new Uint8Array(48)), 1023)]) {
+    assert.equal(parseScannedPenumbraAddress(input), null)
+  }
+})

@@ -11,7 +11,9 @@ import { Ionicons } from '@expo/vector-icons'
 import { Button, Card, Input } from '@/components/ui'
 import { QRCodeScannerModal } from './QRCodeScannerModal'
 import { usePenumbraBalances } from '@/hooks'
-import { formatAmount } from '@bankd/shared'
+import { chainConfig } from '@bankd/shared'
+import { formatUnits } from 'viem'
+import { useBalances, useWallet } from '@/hooks'
 import {
   borderRadius,
   colors,
@@ -30,8 +32,9 @@ interface TokenOption {
   amount: string
   amountFormatted: string
   decimals: number
-  source: 'private'
+  source: 'private' | 'public'
   assetId: string
+  baseDenom: string
 }
 
 export interface SendFormState {
@@ -55,6 +58,9 @@ export interface SendFormProps {
 // ---------------------------------------------------------------------------
 
 export function SendForm({ onSend, disabled, formState, onFormStateChange }: SendFormProps) {
+  const [source, setSource] = useState<'private' | 'public'>('private')
+  const { hexAddress } = useWallet()
+  const { data: publicBalances } = useBalances(hexAddress)
   const { data: privateBalances } = usePenumbraBalances()
 
   const selectedToken = formState?.selectedToken ?? null
@@ -72,6 +78,9 @@ export function SendForm({ onSend, disabled, formState, onFormStateChange }: Sen
 
   // Only show private (Penumbra) balances
   const tokens = useMemo<TokenOption[]>(() => {
+    if (source === 'public') return (publicBalances ?? []).filter(b => b.denom === chainConfig.denom && BigInt(b.amount) > 0n).map(b => ({
+      symbol: 'BRL', name: 'BRL', amount: b.amount, amountFormatted: formatUnits(BigInt(b.amount), 18), decimals: 18, source: 'public' as const, assetId: '', baseDenom: b.denom,
+    }))
     if (!privateBalances) return []
     return privateBalances
       .filter((b) => BigInt(b.amount) > 0n)
@@ -79,12 +88,13 @@ export function SendForm({ onSend, disabled, formState, onFormStateChange }: Sen
         symbol: b.symbol,
         name: b.name || b.symbol,
         amount: b.amount,
-        amountFormatted: formatAmount(b.amountFormatted),
+        amountFormatted: b.amountFormatted,
         decimals: b.decimals,
         source: 'private' as const,
         assetId: b.assetId,
+        baseDenom: b.baseDenom,
       }))
-  }, [privateBalances])
+  }, [privateBalances, publicBalances, source])
 
   const canSend = !!selectedToken && !!amount && !!recipient && !disabled
 
@@ -99,6 +109,9 @@ export function SendForm({ onSend, disabled, formState, onFormStateChange }: Sen
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
     >
+      <View style={{ flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.lg }}>
+        {(['private', 'public'] as const).map(mode => <Button key={mode} title={mode === 'private' ? 'Private' : 'Public'} variant={source === mode ? 'primary' : 'secondary'} disabled={disabled} onPress={() => { setSource(mode); setSelectedToken(null); setPickerOpen(false) }} />)}
+      </View>
       {/* Token Picker */}
       <Text style={styles.label}>Token</Text>
       <Pressable
@@ -111,7 +124,7 @@ export function SendForm({ onSend, disabled, formState, onFormStateChange }: Sen
           }
         >
           {selectedToken
-            ? `${selectedToken.symbol} (Private)`
+            ? `${selectedToken.symbol} (${selectedToken.source})`
             : 'Select a token'}
         </Text>
         <Text style={styles.pickerChevron}>{pickerOpen ? '▲' : '▼'}</Text>
@@ -124,6 +137,8 @@ export function SendForm({ onSend, disabled, formState, onFormStateChange }: Sen
           ) : (
             tokens.map((token, i) => (
               <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`${token.symbol} ${token.source} balance`}
                 key={`${token.symbol}-${token.source}-${i}`}
                 style={({ pressed }) => [
                   styles.tokenRow,
@@ -139,7 +154,7 @@ export function SendForm({ onSend, disabled, formState, onFormStateChange }: Sen
                   <Text style={styles.tokenSymbol}>{token.symbol}</Text>
                   <Text style={styles.tokenSource}>
                     <Ionicons name="lock-closed" size={12} color={colors.gray[400]} />{' '}
-                    Private
+                    {token.source}
                   </Text>
                 </View>
                 <Text style={styles.tokenAmount}>{token.amountFormatted}</Text>
@@ -167,7 +182,7 @@ export function SendForm({ onSend, disabled, formState, onFormStateChange }: Sen
           <Text style={styles.balanceValue}>
             {selectedToken.amountFormatted} {selectedToken.symbol} available
           </Text>
-          <Pressable onPress={() => setAmount(selectedToken.amount)}>
+          <Pressable onPress={() => setAmount(selectedToken.amountFormatted)}>
             <Text style={styles.balanceMax}>Use max</Text>
           </Pressable>
         </View>
@@ -190,20 +205,20 @@ export function SendForm({ onSend, disabled, formState, onFormStateChange }: Sen
         </Pressable>
       </View>
       <Input
-        placeholder="penumbra1..."
+        placeholder={source === 'private' ? 'shieldd1...' : '0x...'}
         value={recipient}
         onChangeText={setRecipient}
         autoCapitalize="none"
         autoCorrect={false}
       />
       <Text style={styles.recipientHint}>
-        Only private addresses (penumbra1…) are supported
+        {source === 'private' ? 'Shieldd private address (shieldd1…)' : 'Public EVM address (0x…)'}
       </Text>
 
       {/* Estimated Fee */}
       <View style={styles.feeRow}>
         <Text style={styles.feeLabel}>Estimated Fee</Text>
-        <Text style={styles.feeValue}>None (penumbra)</Text>
+        <Text style={styles.feeValue}>{source === 'private' ? 'None (Shieldd)' : 'Network gas in BRL'}</Text>
       </View>
 
       {/* Send Button */}

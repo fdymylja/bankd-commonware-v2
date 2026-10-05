@@ -1,5 +1,5 @@
 /**
- * Hook to fetch Cosmos bank balances for an address.
+ * Hook to fetch native Commonware BRL balances for an address.
  * Identical to admin's useBalances — uses shared query options.
  */
 

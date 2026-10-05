@@ -6,6 +6,7 @@
  */
 
 import { Asset } from 'expo-asset'
+import { File } from 'expo-file-system'
 import React, {
   forwardRef,
   useCallback,
@@ -53,8 +54,7 @@ export const PenumbraWebView = forwardRef<
         await asset.downloadAsync()
         if (asset.localUri) {
           // Fetch the local file URI as text
-          const response = await fetch(asset.localUri)
-          const html = await response.text()
+          const html = await new File(asset.localUri).text()
           console.log('[PenumbraWebView] Loaded bridge HTML:', html.length, 'chars')
           setHtmlContent(html)
         }

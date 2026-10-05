@@ -18,6 +18,7 @@ import {
 import type { HDAccount } from 'viem/accounts'
 
 import { chainConfig } from '@bankd/shared'
+import { getNetworkSettings } from '../network'
 
 // =============================================================================
 // Chain Definition
@@ -44,16 +45,18 @@ export const bankdChain: Chain = defineChain({
 // =============================================================================
 
 let publicClientInstance: PublicClient | null = null
+let clientRpcUrl = ''
 
 /**
  * Get a viem public client for read-only operations.
- * Returns a cached singleton — chain RPC doesn't change during a session.
+ * Recreates the client when the configured RPC endpoint changes.
  */
 export function getPublicClient(): PublicClient {
-  if (!publicClientInstance) {
+  if (!publicClientInstance || clientRpcUrl !== getNetworkSettings().rpcUrl) {
+    clientRpcUrl = getNetworkSettings().rpcUrl
     publicClientInstance = createPublicClient({
       chain: bankdChain,
-      transport: http(chainConfig.evmRpc),
+      transport: http(getNetworkSettings().rpcUrl),
     })
   }
   return publicClientInstance
@@ -76,6 +79,6 @@ export function createMobileWalletClient(
   return createWalletClient({
     account,
     chain: bankdChain,
-    transport: http(chainConfig.evmRpc),
+    transport: http(getNetworkSettings().rpcUrl),
   })
 }

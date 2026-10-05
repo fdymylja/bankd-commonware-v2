@@ -1,14 +1,11 @@
-const PENUMBRA_ADDRESS_PATTERN = /^penumbra1[ac-hj-np-z02-9]+$/
+import { bech32m } from 'bech32'
 
-/**
- * Parse a QR payload into a Penumbra address suitable for private sends.
- *
- * For now this intentionally accepts only plain bech32m Penumbra addresses.
- * URI payloads such as `penumbra:...` can be added later without changing UI
- * call sites.
- */
+/** Shieldd uses a 48-byte address and bech32m checksum. */
 export function parseScannedPenumbraAddress(payload: string): string | null {
   const value = payload.trim()
-  if (!PENUMBRA_ADDRESS_PATTERN.test(value)) return null
-  return value
+  try {
+    const decoded = bech32m.decode(value, 1023)
+    if (decoded.prefix !== 'shieldd' || bech32m.fromWords(decoded.words).length !== 48) return null
+    return value.toLowerCase()
+  } catch { return null }
 }

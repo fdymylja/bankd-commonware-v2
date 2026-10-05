@@ -10,7 +10,7 @@
 import { useFonts } from 'expo-font'
 import { Stack, useRouter } from 'expo-router'
 import * as SplashScreen from 'expo-splash-screen'
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native'
 import 'react-native-reanimated'
 
@@ -19,8 +19,9 @@ import {
   NativeWalletProvider,
   useNativeWallet,
 } from '@/lib/native-wallet'
-import { PenumbraProvider, usePenumbraBridge } from '@/providers/PenumbraProvider'
+import { PenumbraProvider } from '@/providers/PenumbraProvider'
 import { QueryProvider } from '@/providers/QueryProvider'
+import { loadNetworkSettings } from '@/lib/network-storage'
 import { TransferProvider } from '@/providers/TransferProvider'
 
 export { ErrorBoundary } from 'expo-router'
@@ -37,10 +38,8 @@ SplashScreen.preventAutoHideAsync()
 
 function InnerLayout() {
   const { initState, isInitializing } = useNativeWallet()
-  const bridge = usePenumbraBridge()
   const router = useRouter()
 
-  const bridgeReady = !!bridge.penumbraAddress
 
   // Navigate based on wallet state — hooks must be called before any return
   useEffect(() => {
@@ -50,19 +49,16 @@ function InnerLayout() {
       router.replace('/auth/welcome' as any)
     } else if (initState === 'locked') {
       router.replace('/auth/unlock' as any)
-    } else if (initState === 'unlocked' && bridgeReady) {
+    } else if (initState === 'unlocked') {
       router.replace('/(tabs)' as any)
     }
-  }, [initState, isInitializing, bridgeReady])
+  }, [initState, isInitializing])
 
   // Show loading while checking wallet state or waiting for bridge
-  if (isInitializing || (initState === 'unlocked' && !bridgeReady)) {
+  if (isInitializing) {
     return (
       <View style={styles.loading}>
         <ActivityIndicator size="large" color={colors.primary[600]} />
-        {initState === 'unlocked' && !bridgeReady && (
-          <Text style={styles.loadingText}>Initializing wallet...</Text>
-        )}
       </View>
     )
   }
@@ -83,6 +79,10 @@ function InnerLayout() {
 // ---------------------------------------------------------------------------
 
 export default function RootLayout() {
+  const [networkReady, setNetworkReady] = useState(false)
+  useEffect(() => {
+    loadNetworkSettings().catch(error => console.warn('Network settings: ' + error.message)).finally(() => setNetworkReady(true))
+  }, [])
   const [loaded, error] = useFonts({
     SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
   })
@@ -92,12 +92,12 @@ export default function RootLayout() {
   }, [error])
 
   useEffect(() => {
-    if (loaded) {
+    if (loaded && networkReady) {
       SplashScreen.hideAsync()
     }
-  }, [loaded])
+  }, [loaded, networkReady])
 
-  if (!loaded) {
+  if (!loaded || !networkReady) {
     return null
   }
 

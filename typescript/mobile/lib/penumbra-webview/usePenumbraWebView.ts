@@ -13,7 +13,7 @@
  *   <PenumbraWebView ref={webViewRef} onEvent={onEvent} />
  */
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type {
   BridgeCommand,
@@ -45,6 +45,9 @@ export interface PenumbraWebViewState {
 
   /** Error handler to pass to PenumbraWebView's onError prop. */
   onWebViewError: (error: string) => void
+
+  /** Destroy in-memory keys and reject requests when the bridge reloads. */
+  reload: () => void
 
   /** Whether the WebView bridge has loaded and sent 'ready'. */
   isReady: boolean
@@ -207,6 +210,26 @@ export function usePenumbraWebView(): PenumbraWebViewState {
   const [balances, setBalances] = useState<PenumbraBridgeBalance[]>([])
   const [lastError, setLastError] = useState<string | null>(null)
 
+  const cancelPending = useCallback(() => {
+    for (const pending of pendingRequests.current.values()) {
+      clearTimeout(pending.timeout)
+      pending.reject(new Error('Wallet engine was restarted'))
+    }
+    pendingRequests.current.clear()
+    progressCallbacks.current.clear()
+  }, [])
+  const reload = useCallback(() => {
+    cancelPending()
+    setIsReady(false)
+    setIsInitialized(false)
+    setIsSyncing(false)
+    setSyncProgress(null)
+    setBalances([])
+    setLastError(null)
+    webViewRef.current?.reload()
+  }, [cancelPending])
+  useEffect(() => cancelPending, [cancelPending])
+
   // =========================================================================
   // Request-response correlation
   // =========================================================================
@@ -222,6 +245,8 @@ export function usePenumbraWebView(): PenumbraWebViewState {
           reject(new Error('Command must have a requestId'))
           return
         }
+
+        if (!webViewRef.current) { reject(new Error('Wallet engine is not ready')); return }
 
         // Set up timeout
         const timeout = setTimeout(() => {
@@ -278,6 +303,8 @@ export function usePenumbraWebView(): PenumbraWebViewState {
       switch (event.type) {
         // --- Lifecycle ---
         case 'ready':
+          cancelPending()
+          setBalances([])
           setIsReady(true)
           setIsInitialized(false)
           setIsSyncing(false)
@@ -510,7 +537,7 @@ export function usePenumbraWebView(): PenumbraWebViewState {
           break
       }
     },
-    [resolvePending, rejectPending]
+    [resolvePending, rejectPending, cancelPending]
   )
 
   // =========================================================================
@@ -779,6 +806,7 @@ export function usePenumbraWebView(): PenumbraWebViewState {
 
   return {
     webViewRef,
+    reload,
     onEvent,
     onWebViewError,
     isReady,

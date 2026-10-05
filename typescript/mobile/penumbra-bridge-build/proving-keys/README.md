@@ -1,11 +1,5 @@
-# Proving Keys
+# Proof generation
 
-These binary files are required to build ZK proofs for Penumbra transactions (spend, output actions).
-
-Copy from `admin/public/proving-keys/`:
-
-```bash
-cp ../../../admin/public/proving-keys/{spend_pk,output_pk}.bin .
-```
-
-They are inlined as base64 into the bridge HTML during the Vite build.
+The Commonware SDK delegates transfer proofs to the HTTP prover built from the
+monorepo's pinned `shieldd/` artifacts. Start `scripts/bankd/prover.sh` from the
+repository root. No proving-key binaries need to be copied into the mobile app.

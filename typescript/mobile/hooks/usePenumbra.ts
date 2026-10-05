@@ -20,8 +20,8 @@ export const usePenumbra = () => {
   const wallet = useNativeWallet()
   const bridge = usePenumbraBridge()
 
-  const isConnected = wallet.initState === 'unlocked'
-  const chainId = isConnected ? chainConfig.chainId : null
+  const isConnected = wallet.initState === 'unlocked' && bridge.isInitialized
+  const chainId = isConnected ? `bankd-${chainConfig.evmChainId}` : null
 
   const getEphemeralAddress = useCallback(
     async (accountIndex: number = wallet.currentAccount): Promise<string> => {
@@ -35,10 +35,10 @@ export const usePenumbra = () => {
     isConnected,
 
     /** Whether the wallet is currently connecting. */
-    isConnecting: wallet.isInitializing,
+    isConnecting: wallet.isInitializing || (wallet.initState === 'unlocked' && !bridge.isInitialized),
 
     /** Penumbra bech32 address (null if not unlocked or no Penumbra keys). */
-    address: wallet.addresses?.penumbra?.bech32 ?? null,
+    address: bridge.penumbraAddress,
 
     /** Transparent (IBC-compatible) Penumbra address. */
     transparentAddress: wallet.addresses?.penumbraTransparent ?? null,
@@ -53,19 +53,19 @@ export const usePenumbra = () => {
     chainId,
 
     /** Whether we're connected to the expected chain. */
-    isCorrectChain: true,
+    isCorrectChain: bridge.isInitialized,
 
     /** Expected chain ID from config. */
-    expectedChainId: chainConfig.chainId,
+    expectedChainId: `bankd-${chainConfig.evmChainId}`,
 
     /** Last error from wallet operations. */
-    error: wallet.error,
+    error: bridge.lastError || wallet.error,
 
     /** Whether Penumbra sync is running. */
-    isSyncing: wallet.isSyncing,
+    isSyncing: bridge.isSyncing,
 
     /** Sync progress (currentHeight, targetHeight, percent). */
-    syncProgress: wallet.syncProgress,
+    syncProgress: bridge.syncProgress,
 
     // Map to wallet actions
     connect: wallet.unlock,

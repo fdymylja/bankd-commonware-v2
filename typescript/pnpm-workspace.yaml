@@ -1,5 +1,7 @@
 packages:
   - admin
+  - mobile
+  - mobile/penumbra-bridge-build
   - packages/*
 overrides:
   '@mizufinance/bech32m': https://github.com/mizufinance/penumbra-web/releases/download/bankd-demo.1/mizufinance-bech32m-18.0.1-bankd-demo.1.tgz

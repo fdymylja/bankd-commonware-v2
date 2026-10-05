@@ -17,12 +17,7 @@ export {
   type LoanStatus,
   ERC20_APPROVE_ABI,
 } from '@bankd/shared/evm/simpleLending'
-export {
-  MSGEXEC_ABI,
-  MSGEXEC_PRECOMPILE_ADDRESS,
-  NATIVE_ABI,
-  NATIVE_PRECOMPILE_ADDRESS,
-} from '@bankd/shared/evm/precompile'
+export { BANK_SEND_ABI, BANK_SEND_ADDRESS, SHIELD_ABI, SHIELD_ADDRESS } from '@bankd/shared/evm/bankd'
 export { MOCK_ERC20_ABI } from '@bankd/shared/evm/mockERC20'
 export { createEEMMemo, createPlaceOrderMemo, createExecuteOrderMemo } from '@bankd/shared/evm/memo'
 export { getProvider, parseAmount } from '@bankd/shared/evm/client'
@@ -38,13 +33,8 @@ export {
   executeTx,
   type TransactionStep,
   type EvmTransactionStep,
-  type MsgExecStep,
-  type MsgExecBatchStep,
   type DeployContractStep,
   type ExecuteTransactionResult,
-  type ExecuteBatchTransactionResult,
   type DeployTransactionResult,
   type TransactionProgressCallback,
-  type MsgExecProtoEncoder,
-  type MsgExecProtoResponseDecoder,
 } from './execute'

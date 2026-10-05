@@ -35,14 +35,6 @@ export default function UnlockScreen() {
   const [password, setPassword] = useState('')
   const [isUnlocking, setIsUnlocking] = useState(false)
 
-  // DEBUG: Auto-unlock with dev password
-  useEffect(() => {
-    if (__DEV__) {
-      (async () => {
-        try { await unlock('12345678'); router.replace('/(tabs)') } catch {}
-      })()
-    }
-  }, [unlock, router])
   const [localError, setLocalError] = useState<string | null>(null)
   const [walletLabel, setWalletLabel] = useState<string>('Your Wallet')
   const [hasBiometric, setHasBiometric] = useState(false)

@@ -44,7 +44,7 @@ export interface LocalTransaction {
 // Storage
 // =============================================================================
 
-const STORAGE_KEY = 'bankd:tx_history_v3'
+let STORAGE_KEY = 'bankd:commonware:history:locked'
 const MAX_HISTORY = 100
 
 let cachedHistory: LocalTransaction[] | null = null
@@ -54,15 +54,24 @@ function notifyListeners() {
   listeners.forEach((fn) => fn())
 }
 
+export async function setTransactionHistoryIdentity(identity: string) {
+  STORAGE_KEY = `bankd:commonware:history:${identity}`
+  cachedHistory = null
+  notifyListeners()
+  await loadHistory()
+  notifyListeners()
+}
+
 async function loadHistory(): Promise<LocalTransaction[]> {
   if (cachedHistory !== null) return cachedHistory
   try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY)
-    cachedHistory = raw ? JSON.parse(raw) : []
+    const key = STORAGE_KEY
+    const raw = await AsyncStorage.getItem(key)
+    if (key === STORAGE_KEY) cachedHistory = raw ? JSON.parse(raw) : []
   } catch {
     cachedHistory = []
   }
-  return cachedHistory!
+  return cachedHistory ?? []
 }
 
 async function persistHistory(history: LocalTransaction[]) {
@@ -95,7 +104,7 @@ function shouldHideDustTransaction(tx: LocalTransaction): boolean {
   // cancel/liquidate-style actions. Those render as ±0 with 6+ decimal assets
   // and are confusing in Recent Activity, so keep them out of the display view
   // while preserving the raw note activity in storage.
-  return amount <= 1n
+  return amount <= 0n
 }
 
 export function coalesceTransactionHistoryForDisplay(
@@ -132,7 +141,7 @@ export function coalesceTransactionHistoryForDisplay(
     const receivedTotal = received.reduce((sum, tx) => sum + getTransactionAmount(tx), 0n)
     const net = sentTotal - receivedTotal
 
-    if (net >= -1n && net <= 1n) continue
+    if (net === 0n) continue
 
     const representative = net > 0n ? sent[0] : received[0]
     if (!representative) continue
@@ -154,7 +163,9 @@ export function coalesceTransactionHistoryForDisplay(
 // =============================================================================
 
 async function processActivity(activity: NoteActivity[]) {
+  const identity = STORAGE_KEY
   const history = await loadHistory()
+  if (identity !== STORAGE_KEY) return
   const existingHeights = new Set(history.map((tx) => `${tx.type}:${tx.height}:${tx.rawAmount}:${tx.assetId}`))
   const newEntries: LocalTransaction[] = []
   const activityGroupId = `activity-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -177,7 +188,7 @@ async function processActivity(activity: NoteActivity[]) {
       timestamp: note.timestamp || new Date().toISOString(),
       assetId: note.assetId,
       rawAmount: note.amount,
-      decimals: 6, // default, overridden at display time
+      decimals: 18, // default, overridden at display time
       activityGroupId,
     })
   }
@@ -211,7 +222,7 @@ export function useTransactionHistory() {
 
     // Subscribe to in-memory updates
     const listener = () => {
-      if (cachedHistory) setHistory(coalesceTransactionHistoryForDisplay([...cachedHistory]))
+      setHistory(coalesceTransactionHistoryForDisplay([...(cachedHistory ?? [])]))
     }
     listeners.add(listener)
 

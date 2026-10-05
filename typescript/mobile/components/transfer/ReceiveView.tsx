@@ -3,6 +3,7 @@ import QRCode from 'qrcode'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -11,6 +12,7 @@ import {
 } from 'react-native'
 import { WebView } from 'react-native-webview'
 
+import { useWallet } from '@/hooks/useWallet'
 import { Card } from '@/components/ui'
 import { usePenumbraBridge } from '@/providers/PenumbraProvider'
 import {
@@ -26,6 +28,8 @@ import {
 // ---------------------------------------------------------------------------
 
 export function ReceiveView() {
+  const { hexAddress } = useWallet()
+  const [publicCopied, setPublicCopied] = useState(false)
   const { penumbraAddress, generateEphemeralAddressRecord } = usePenumbraBridge()
   const [copied, setCopied] = useState(false)
   const [depositAddress, setDepositAddress] = useState<string | null>(null)
@@ -112,6 +116,15 @@ export function ReceiveView() {
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
     >
+      <Card title="Public receive address" style={{ marginBottom: spacing.lg }}>
+        <Text selectable style={{ fontSize: fontSize.xs, marginBottom: spacing.md }}>{hexAddress ?? '—'}</Text>
+        <Pressable onPress={async () => {
+          if (!hexAddress) return
+          await Clipboard.setStringAsync(hexAddress)
+          setPublicCopied(true)
+          setTimeout(() => setPublicCopied(false), 2000)
+        }}><Text style={{ color: colors.primary[600] }}>{publicCopied ? 'Copied' : 'Copy Public Address'}</Text></Pressable>
+      </Card>
       <Card title="Receive Deposit" style={styles.primaryCard}>
         <Text style={styles.primaryHint}>
           Generate a fresh deposit address every time you receive funds. Share
@@ -121,7 +134,9 @@ export function ReceiveView() {
         {depositAddress ? (
           <>
             <View style={styles.qrCard}>
-              {qrHtml ? (
+              {qrHtml ? Platform.OS === 'web' ? (
+                <iframe title="Receive QR code" srcDoc={qrHtml} style={{ width: 220, height: 220, border: 0 }} />
+              ) : (
                 <WebView
                   originWhitelist={['*']}
                   source={{ html: qrHtml }}

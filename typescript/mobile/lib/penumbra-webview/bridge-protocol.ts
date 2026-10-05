@@ -20,9 +20,9 @@ export type InitCommand = {
   fvk: string
   /** Spend Key as base64-encoded inner bytes (needed for tx authorization) */
   spendKey: string
-  /** Penumbra gRPC-web proxy URL */
+  /** Commonware RPC URL (the SDK query adapter uses this origin) */
   grpcUrl: string
-  /** CometBFT RPC URL (e.g. http://localhost:26657) */
+  /** Commonware EVM / Shieldd RPC URL (e.g. http://127.0.0.1:8545) */
   rpcUrl?: string
   /** Penumbra prover service URL */
   proverUrl?: string

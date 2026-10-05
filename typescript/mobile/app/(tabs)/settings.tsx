@@ -12,7 +12,8 @@ import {
   View,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import AsyncStorage from '@react-native-async-storage/async-storage'
+import { useNetworkSettings, type NetworkSettings } from '@/lib/network'
+import { saveNetworkSettings } from '@/lib/network-storage'
 import * as Clipboard from 'expo-clipboard'
 import { useQueryClient } from '@tanstack/react-query'
 import {
@@ -34,16 +35,6 @@ import {
   saveEphemeralAddressRecords,
 } from '@/lib/native-wallet/storage'
 import { borderRadius, colors, fontSize, fontWeight, spacing } from '@/lib/theme'
-
-// =============================================================================
-// AsyncStorage keys for network settings
-// =============================================================================
-
-const STORAGE_KEY_EVM_RPC = 'bankd_settings_evm_rpc'
-const STORAGE_KEY_COSMOS_RPC = 'bankd_settings_cosmos_rpc'
-
-const DEFAULT_EVM_RPC = 'http://localhost:8545'
-const DEFAULT_COSMOS_RPC = 'http://localhost:27657'
 
 // =============================================================================
 // Types
@@ -72,8 +63,12 @@ export default function SettingsScreen() {
   const [biometricEnabled, setBiometricEnabled] = useState(false)
   const [biometricAvailable, setBiometricAvailable] = useState(false)
   const [isClearing, setIsClearing] = useState(false)
-  const [evmRpc, setEvmRpc] = useState(DEFAULT_EVM_RPC)
-  const [cosmosRpc, setCosmosRpc] = useState(DEFAULT_COSMOS_RPC)
+  const network = useNetworkSettings()
+  const evmRpc = network.rpcUrl
+  const proverRpc = network.proverUrl
+  const [networkField, setNetworkField] = useState<keyof NetworkSettings | null>(null)
+  const [endpointInput, setEndpointInput] = useState('')
+  const [endpointError, setEndpointError] = useState('')
   const [showImportModal, setShowImportModal] = useState(false)
   const [importText, setImportText] = useState('')
   const queryClient = useQueryClient()
@@ -81,13 +76,6 @@ export default function SettingsScreen() {
   // Load persisted settings
   useEffect(() => {
     void (async () => {
-      const [storedEvm, storedCosmos] = await Promise.all([
-        AsyncStorage.getItem(STORAGE_KEY_EVM_RPC),
-        AsyncStorage.getItem(STORAGE_KEY_COSMOS_RPC),
-      ])
-      if (storedEvm) setEvmRpc(storedEvm)
-      if (storedCosmos) setCosmosRpc(storedCosmos)
-
       const available = await isBiometricAvailable()
       setBiometricAvailable(available)
       // hasPasskey is reused for biometric enabled state
@@ -119,7 +107,7 @@ export default function SettingsScreen() {
       title: 'Network',
       data: [
         { key: 'evm_rpc', label: 'EVM RPC', type: 'navigate' },
-        { key: 'cosmos_rpc', label: 'Cosmos RPC', type: 'navigate' },
+        { key: 'prover_rpc', label: 'Shieldd Prover', type: 'navigate' },
       ],
     },
     {
@@ -217,20 +205,21 @@ export default function SettingsScreen() {
   }, [wallet])
 
   const handleEditEvmRpc = useCallback(() => {
-    Alert.prompt('EVM RPC', 'Enter EVM RPC endpoint:', async (value) => {
-      if (!value) return
-      await AsyncStorage.setItem(STORAGE_KEY_EVM_RPC, value)
-      setEvmRpc(value)
-    }, 'plain-text', evmRpc)
+    setNetworkField('rpcUrl'); setEndpointInput(evmRpc); setEndpointError('')
   }, [evmRpc])
-
-  const handleEditCosmosRpc = useCallback(() => {
-    Alert.prompt('Cosmos RPC', 'Enter Cosmos RPC endpoint:', async (value) => {
-      if (!value) return
-      await AsyncStorage.setItem(STORAGE_KEY_COSMOS_RPC, value)
-      setCosmosRpc(value)
-    }, 'plain-text', cosmosRpc)
-  }, [cosmosRpc])
+  const handleEditProverRpc = useCallback(() => {
+    setNetworkField('proverUrl'); setEndpointInput(proverRpc); setEndpointError('')
+  }, [proverRpc])
+  const handleSaveEndpoint = async () => {
+    if (!networkField) return
+    try {
+      await saveNetworkSettings({ ...network, [networkField]: endpointInput })
+      queryClient.removeQueries()
+      setNetworkField(null)
+    } catch (error) {
+      setEndpointError(error instanceof Error ? error.message : 'Could not save endpoint')
+    }
+  }
 
   const handleExportRegistry = useCallback(async () => {
     try {
@@ -331,8 +320,8 @@ export default function SettingsScreen() {
         case 'evm_rpc':
           handleEditEvmRpc()
           break
-        case 'cosmos_rpc':
-          handleEditCosmosRpc()
+        case 'prover_rpc':
+          handleEditProverRpc()
           break
         case 'export_registry':
           handleExportRegistry()
@@ -356,7 +345,7 @@ export default function SettingsScreen() {
       handleExportSeedPhrase,
       handleExportRegistry,
       handleEditEvmRpc,
-      handleEditCosmosRpc,
+      handleEditProverRpc,
       handleClearPenumbra,
       handleLockWallet,
       handleDeleteWallet,
@@ -375,8 +364,8 @@ export default function SettingsScreen() {
         return `#${wallet.currentAccount}`
       case 'evm_rpc':
         return evmRpc
-      case 'cosmos_rpc':
-        return cosmosRpc
+      case 'prover_rpc':
+        return proverRpc
       case 'version':
         return '1.0.0'
       case 'chain_id':
@@ -403,6 +392,20 @@ export default function SettingsScreen() {
       <View style={styles.header}>
         <Text style={styles.title}>Settings</Text>
       </View>
+
+      <Modal visible={!!networkField} transparent animationType="slide" onRequestClose={() => setNetworkField(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>{networkField === 'rpcUrl' ? 'Commonware RPC' : 'Shieldd Prover'}</Text>
+            <TextInput accessibilityLabel="Network endpoint" style={styles.modalTextInput} value={endpointInput} onChangeText={setEndpointInput} autoCapitalize="none" autoCorrect={false} keyboardType="url" />
+            {!!endpointError && <Text style={{ color: colors.red[500] }}>{endpointError}</Text>}
+            <View style={styles.modalButtons}>
+              <Pressable style={styles.modalButtonCancel} onPress={() => setNetworkField(null)}><Text style={styles.modalButtonCancelText}>Cancel</Text></Pressable>
+              <Pressable style={styles.modalButtonImport} onPress={handleSaveEndpoint}><Text style={styles.modalButtonImportText}>Save</Text></Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* Import Registry Modal */}
       <Modal

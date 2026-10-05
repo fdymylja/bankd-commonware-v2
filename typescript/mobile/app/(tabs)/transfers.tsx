@@ -2,8 +2,10 @@ import { useLocalSearchParams } from 'expo-router'
 import React, { useCallback, useEffect, useState } from 'react'
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { parseUnits } from 'viem'
+import { amountInBaseUnits } from '@/lib/commonware/transactions'
+import { parseScannedPenumbraAddress } from '@/lib/penumbra-address'
 
+import { useGlobalTransfer } from '@/providers/TransferProvider'
 import { ProgressStepper, ReceiveView, SendForm } from '@/components/transfer'
 import { PRIVATE_TX_STEPS } from '@/components/transfer/ProgressStepper'
 import type { SendFormState } from '@/components/transfer/SendForm'
@@ -42,8 +44,10 @@ export default function TransfersScreen() {
     recipient: '',
   })
   const bridge = usePenumbraBridge()
+  const transfer = useGlobalTransfer()
   const [isSending, setIsSending] = useState(false)
   const [progressMessage, setProgressMessage] = useState<string | null>(null)
+  const [sendError, setSendError] = useState('')
   const [stepIndex, setStepIndex] = useState<number | null>(null)
 
   useEffect(() => {
@@ -52,18 +56,10 @@ export default function TransfersScreen() {
 
   const handleSend = useCallback(
     async (
-      token: { symbol: string; amount: string; decimals: number; source: 'private'; assetId: string },
+      token: { symbol: string; amount: string; decimals: number; source: 'private' | 'public'; assetId: string; baseDenom: string },
       amount: string,
       recipient: string
     ) => {
-      if (!recipient.startsWith('penumbra1')) {
-        Alert.alert('Invalid Address', 'Please enter a valid Penumbra address.')
-        return
-      }
-
-      // Convert display amount to base units
-      const baseAmount = parseUnits(amount, token.decimals)
-
       const stepMap: Record<string, number> = {
         planning: 0,
         authorizing: 1,
@@ -73,10 +69,19 @@ export default function TransfersScreen() {
         syncing: 5,
       }
 
+      setSendError('')
       setIsSending(true)
       setStepIndex(0)
       setProgressMessage('Planning transaction…')
       try {
+        const baseAmount = amountInBaseUnits(amount, token.decimals)
+        if (baseAmount > BigInt(token.amount)) throw new Error('Insufficient balance')
+        if (token.source === 'public') {
+          const success = await transfer.sendSameChain({ recipient, amount, denom: token.baseDenom, decimals: token.decimals })
+          if (success) setSendFormState({ selectedToken: null, amount: '', recipient: '' })
+          return
+        }
+        if (!parseScannedPenumbraAddress(recipient)) throw new Error('Enter a valid shieldd1 receive address')
         const result = await bridge.send({
           amount: baseAmount.toString(),
           assetId: token.assetId,
@@ -91,10 +96,10 @@ export default function TransfersScreen() {
           setStepIndex(PRIVATE_TX_STEPS.length - 1) // "Done"
           setSendFormState({ selectedToken: null, amount: '', recipient: '' })
         } else {
-          Alert.alert('Send Failed', result.error || 'Unknown error')
+          setSendError([result.error || 'Send failed', result.txHash ? `Transaction: ${result.txHash}` : ''].filter(Boolean).join(' '))
         }
       } catch (err) {
-        Alert.alert('Send Failed', err instanceof Error ? err.message : 'Unknown error')
+        setSendError(err instanceof Error ? err.message : 'Send failed')
       } finally {
         setTimeout(() => {
           setIsSending(false)
@@ -103,7 +108,7 @@ export default function TransfersScreen() {
         }, 3000)
       }
     },
-    [bridge]
+    [bridge, transfer]
   )
 
   return (
@@ -158,6 +163,8 @@ export default function TransfersScreen() {
           <ProgressStepper currentStep={stepIndex} steps={PRIVATE_TX_STEPS} />
         </View>
       )}
+
+      {!!sendError && <Text style={{ color: colors.red[500], marginHorizontal: spacing.xl }}>{sendError}</Text>}
 
       {/* Tab Content */}
       <View style={styles.body}>

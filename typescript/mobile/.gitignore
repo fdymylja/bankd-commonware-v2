@@ -4,6 +4,9 @@ assets/penumbra-bridge.html
 node_modules/
 .expo/
 dist/
+dist-native/
+test-results/
+playwright-report/
 web-build/
 *.jks
 *.p8

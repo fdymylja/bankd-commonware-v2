@@ -80,6 +80,7 @@ export function Input({
             setIsFocused(false)
             textInputProps.onBlur?.(e)
           }}
+          accessibilityLabel={textInputProps.accessibilityLabel ?? label}
           {...textInputProps}
         />
 

@@ -14,22 +14,23 @@ import React, {
   useRef,
   useState,
 } from 'react'
-import { Platform, StyleSheet, View } from 'react-native'
+import { StyleSheet, View } from 'react-native'
 import { useQueryClient } from '@tanstack/react-query'
 
-import { chainConfig, penumbraConfig } from '@bankd/shared'
+import { chainConfig } from '@bankd/shared'
 import type { EphemeralAddressRecord, OwnPenumbraAddressInfo } from '@bankd/shared/penumbra'
 import {
   createEphemeralAddressRecord,
   type ExternalAddressPurpose,
 } from '@bankd/shared/penumbra'
 
+import { setTransactionHistoryIdentity } from '@/hooks/useTransactionHistory'
+import { useNetworkSettings } from '@/lib/network'
 import { ephemeralAddressRegistryQueryKey } from '@/hooks/useEphemeralAddressRecords'
 import { useNativeWallet } from '@/lib/native-wallet'
 import { getMnemonicForBridge } from '@/lib/native-wallet/wallet'
 import {
   savePenumbraFVK,
-  getPenumbraFVK,
   saveEphemeralAddressRecord,
 } from '@/lib/native-wallet/storage'
 import {
@@ -91,106 +92,67 @@ interface PenumbraProviderProps {
 export function PenumbraProvider({ children }: PenumbraProviderProps) {
   const bridge = usePenumbraWebView()
   const wallet = useNativeWallet()
+  const queryClient = useQueryClient()
   const initAttempted = useRef(false)
+  const [readyEngine, setReadyEngine] = useState<{ key: string } | null>(null)
   const [penumbraAddress, setPenumbraAddress] = useState<string | null>(null)
 
-  // Auto-initialize when WebView is ready and wallet is unlocked
+  const network = useNetworkSettings()
+  const walletIdentity = wallet.addresses?.evm.hex ?? ''
+  const liveEngine = useRef('')
+  const engineKey = `${walletIdentity}:${network.rpcUrl}:${network.proverUrl}`
+
+  liveEngine.current = wallet.initState === 'unlocked' ? engineKey : 'locked'
+
+  // A new WebView destroys the previous wallet's in-memory spend key.
   useEffect(() => {
-    if (
-      bridge.isReady &&
-      !bridge.isInitialized &&
-      !initAttempted.current &&
-      wallet.initState === 'unlocked'
-    ) {
-      initAttempted.current = true
+    initAttempted.current = false
+    setReadyEngine(null)
+    setPenumbraAddress(null)
+    bridge.reload()
+    void setTransactionHistoryIdentity(wallet.initState === 'unlocked' ? `${network.rpcUrl}:${walletIdentity}` : 'locked')
+    queryClient.removeQueries({ queryKey: ['penumbra'] })
+  }, [wallet.initState, engineKey])
 
-      const doInit = async () => {
-        try {
-          let fvkBase64 = ''
-          let spendKeyBase64 = ''
-
-          // Check if we have a stored FVK
-          const storedFVK = await getPenumbraFVK()
-          if (storedFVK) {
-            console.log('[Penumbra] Using stored FVK, deriving spend key...')
-            fvkBase64 = storedFVK
-            // Still need spend key for transactions — derive from mnemonic
-            const mnemonic = await getMnemonicForBridge()
-            if (mnemonic) {
-              const keys = await bridge.deriveKeys(mnemonic)
-              spendKeyBase64 = keys.spendKey
-            }
-          } else {
-            // Derive keys from mnemonic via WebView WASM
-            console.log('[Penumbra] Deriving keys via WebView WASM...')
-            const mnemonic = await getMnemonicForBridge()
-            if (!mnemonic) {
-              console.warn('[Penumbra] Cannot get mnemonic — skipping init')
-              initAttempted.current = false
-              return
-            }
-
-            const keys = await bridge.deriveKeys(mnemonic)
-            fvkBase64 = keys.fvk
-            spendKeyBase64 = keys.spendKey
-
-            // Persist FVK for future sessions
-            await savePenumbraFVK(fvkBase64)
-            console.log('[Penumbra] Keys derived and FVK stored. Address:', keys.address)
-          }
-
-          // Initialize the bridge with FVK
-          const success = await bridge.init({
-            fvk: fvkBase64,
-            spendKey: spendKeyBase64,
-            grpcUrl: chainConfig.grpcWeb,
-            rpcUrl: chainConfig.rpc,
-            proverUrl: penumbraConfig.proverUrl,
-            chainId: chainConfig.chainId,
-          })
-
-          if (success) {
-            console.log('[Penumbra] Bridge initialized, starting sync...')
-            // Fetch the Penumbra address
-            bridge.getAddress(0).then(addr => {
-              console.log('[Penumbra] Address:', addr)
-              setPenumbraAddress(addr)
-            }).catch(console.error)
-            bridge.startSync().catch(console.error)
-          } else {
-            console.error('[Penumbra] Bridge init returned false')
-          }
-        } catch (err) {
-          console.error('[Penumbra] Bridge init failed:', err)
-          initAttempted.current = false
-        }
+  useEffect(() => {
+    if (!bridge.isReady || readyEngine?.key !== engineKey || initAttempted.current || wallet.initState !== 'unlocked') return
+    initAttempted.current = true
+    let cancelled = false
+    const initialize = async () => {
+      try {
+        const mnemonic = await getMnemonicForBridge()
+        if (!mnemonic) throw new Error('Unlock the wallet to initialize Shieldd')
+        const keys = await bridge.deriveKeys(mnemonic)
+        if (cancelled) return
+        await savePenumbraFVK(keys.fvk)
+        const success = await bridge.init({
+          fvk: keys.fvk,
+          spendKey: keys.spendKey,
+          grpcUrl: network.rpcUrl,
+          rpcUrl: network.rpcUrl,
+          proverUrl: network.proverUrl,
+          chainId: `bankd-${chainConfig.evmChainId}`,
+        })
+        if (cancelled || !success) return
+        setPenumbraAddress(await bridge.getAddress(0))
+        await bridge.startSync()
+      } catch (error) {
+        if (!cancelled) bridge.onWebViewError(error instanceof Error ? error.message : 'Wallet initialization failed')
       }
-
-      doInit()
     }
-  }, [bridge.isReady, bridge.isInitialized, wallet.initState, bridge])
-
-  // Reset init flag when wallet locks or bridge becomes ready (re-trigger init)
-  useEffect(() => {
-    if (wallet.initState !== 'unlocked') {
-      initAttempted.current = false
-    }
-  }, [wallet.initState])
+    void initialize()
+    return () => { cancelled = true }
+  }, [bridge.isReady, readyEngine, wallet.initState, engineKey])
 
   const resetAndResync = React.useCallback(async () => {
-    console.log('[Penumbra] Clearing data and resyncing...')
-    // Clear transaction history built from sync events
     const { clearTransactionHistory } = require('@/hooks/useTransactionHistory')
     await clearTransactionHistory()
-    await bridge.clearData()
-    // Reset so the auto-init useEffect will re-trigger
+    if (bridge.isInitialized) await bridge.clearData()
     initAttempted.current = false
+    setReadyEngine(null)
     setPenumbraAddress(null)
-    // The useEffect watching bridge.isInitialized will pick this up
-    // and re-derive keys + re-init + restart sync
+    bridge.reload()
   }, [bridge])
-
-  const queryClient = useQueryClient()
 
   const generateEphemeralAddressRecord = React.useCallback(
     async (input: GenerateEphemeralAddressInput): Promise<EphemeralAddressRecord> => {
@@ -216,6 +178,7 @@ export function PenumbraProvider({ children }: PenumbraProviderProps) {
       penumbraAddress,
       resetAndResync,
       generateEphemeralAddressRecord,
+      getOwnAddressInfo: bridge.getOwnAddressInfo,
     }),
     [bridge, penumbraAddress, resetAndResync, generateEphemeralAddressRecord]
   )
@@ -225,11 +188,19 @@ export function PenumbraProvider({ children }: PenumbraProviderProps) {
       <View style={styles.flex}>
         {children}
         {/* Hidden WebView — inside the flex container with pointerEvents none */}
-        {(Platform.OS !== 'web' || !!process.env.EXPO_PUBLIC_AMM_DEMO_URL) && (
+        {wallet.initState === 'unlocked' && (
           <View style={styles.webViewContainer} pointerEvents="none">
             <PenumbraWebView
+              key={engineKey}
               ref={bridge.webViewRef as React.RefObject<PenumbraWebViewHandle>}
-              onEvent={bridge.onEvent}
+              onEvent={event => {
+                if (liveEngine.current !== engineKey) return
+                if (event.type === 'ready') {
+                  initAttempted.current = false
+                  setReadyEngine({ key: engineKey })
+                }
+                bridge.onEvent(event)
+              }}
               onError={bridge.onWebViewError}
             />
           </View>

@@ -4,7 +4,7 @@ import { SymbolView } from 'expo-symbols'
 
 import { colors, fontSize, fontWeight, spacing, borderRadius } from '@/lib/theme'
 
-export type QuickActionName = 'send' | 'receive' | 'shieldd-demo' | 'create-token'
+export type QuickActionName = 'send' | 'receive' | 'shieldd-demo'
 
 interface QuickActionsProps {
   onAction: (action: QuickActionName) => void
@@ -31,16 +31,11 @@ const actions: {
   },
   {
     name: 'shieldd-demo',
-    label: 'Shieldd',
+    label: 'Swap',
     icon: { ios: 'shield.lefthalf.filled', android: 'security', web: 'security' },
     color: colors.primary[600],
   },
-  {
-    name: 'create-token',
-    label: 'New Token',
-    icon: { ios: 'plus.circle.fill', android: 'add_circle', web: 'add_circle' },
-    color: colors.gray[600],
-  },
+
 ]
 
 export function QuickActions({ onAction, disabled }: QuickActionsProps) {
